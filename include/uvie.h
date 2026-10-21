@@ -98,7 +98,13 @@ size_t uvie_engine_committed_text(const UvieEngine *engine, char *out_buf, size_
 size_t uvie_engine_current_output(const UvieEngine *engine, char *out_buf, size_t out_len);
 
 /**
- * Get the diff-mode raw keystroke chars currently in the composing buffer.
+ * Get the raw keystroke chars of the current word — the WHOLE word, across
+ * V-C-V syllable splits, tone cancels and English dictionary commits.
+ * Hosts use this for "escape restores the literal keystrokes" (the rendered
+ * word is replaced by what the user actually typed).
+ * Writes an EMPTY string when the word outgrew the 24-keystroke raw buffer
+ * (its prefix was committed mid-word): the host must not restore it, since
+ * the raw no longer covers the rendered text.
  * Returns byte count of written string (excluding null terminator).
  */
 size_t uvie_engine_raw_chars(const UvieEngine *engine, char *out_buf, size_t out_len);

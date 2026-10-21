@@ -299,7 +299,11 @@ produces. Candidates that would prefix-shadow a real Telex keystroke
 sequence (from the 30k pairs file, e.g. "tojo" prefixing "tojot"→"tột")
 are dropped unless the English word is common (top ~20k of the corpus) —
 rare English loses to Vietnamese intent; common English wins, matching
-the curated list's own precedent ("dust", "data").
+the curated list's own precedent ("dust", "data"). Words ending in a
+doubled tone key (ss/ff/rr/xx/jj) are dropped unless in the top ~10k:
+the double key is the standard cancel sequence, and the 36 survivors
+(`mass`, `pass`, `business`, …) keep working through the sticky
+fallback documented below.
 
 The feature can be toggled per engine (`set_english_override` /
 `uvie_engine_set_english_override`, default on) so hosts can expose a
@@ -329,12 +333,62 @@ cancel ate a letter), `syst`+`ems`→"systém", `afric`+`ans`→"africán".
 The flag clears on word boundary, commit, reset, and full-word erase
 (typing Vietnamese resumes when the whole word is backspaced away).
 
+**Sticky tail vs. the double-tone cancel.** A dictionary word ending in a
+doubled tone key (`mass`, `pass`, `boss`, …) commits the literal raw, but
+the pipeline's own raw is the *collapsed* form — the second key was the
+standard Telex cancel (`mas`). Committing pins the rest of the word to
+raw, which used to make the cancel untypeable for every such word
+(`masster` stayed literal). Two pieces fix it generally:
+
+- The override saves the pre-override pipeline state in
+  `diff.english_fallback` (`EnglishFallback`: a `ComposingSnapshot` +
+  `diff_committed` + the dictionary word's length) when the committed
+  word ends with a doubled tone key (`ends_with_doubled_tone_key`) AND
+  the pipeline actually collapsed a key (`raw_chars.len() <
+  key_log.len()`, so a word like `class` whose `ss` stayed literal is
+  not treated as a cancel).
+- While that fallback is live, the word is re-opened as Vietnamese only
+  when all three hold: the tail's first key is a consonant (a vowel tail
+  is English — `mass`+`ive`, `less`+`er` — and re-interpreting it merges
+  the vowel into the committed syllable, `lesser`→"lể"), the extended
+  word is not a dictionary prefix, and the tail reads as Vietnamese
+  (`tail_reads_as_vietnamese`: its own render carries a tone/modifier
+  mark — `ter`→"tẻ", while `key`/`code`/`less`/`through` stay literal)
+  with the re-rendered word staying plain letters
+  (`word_renders_plain`: no Vietnamese diacritics — `restlessness` must
+  not become "rétlesnes"). Then `fallback_to_vietnamese` restores the
+  saved state, replays the tail and diffs the raw text on screen to the
+  Vietnamese render: `masster`→"master", `misster`→"mister",
+  `Masster`→"Master". Dictionary words and prefixes always stay raw
+  (`mass`, `massive`, `passport`, `password`, `passing`, `passkey`,
+  `passcode`, `passthrough`, `misspeak`).
+- Backspacing below the dictionary word clears the saved fallback
+  (`pop_word_raw`) — the snapshot no longer matches the typed prefix and
+  restoring it would rewrite deleted text.
+
+Known trade-off (16 of the 235k Webster word list, all obscure except the
+two noted): `<cancel-word>+less/ness/...` compounds that are not in the
+dictionary render collapsed — `lossless`→"losless", `massless`→"masless",
+plus archaic forms (`bassness`, `mossless`, `passless`, `tariffless`,
+`mosstrooping`, …). They are structurally identical to `masster` at every
+keystroke, so only dictionary coverage can separate them. The dictionary
+still applies at the word boundary for the words it holds, and Escape
+restores the literal keystrokes.
+
 The diff API tracks a lossless `word_raw: CharVec<24>` buffer in
 `DiffState` that survives V-C-V splits and double-tone-cancel (unlike
 the lossy `raw_chars`). At each keystroke, if `is_english_override
 (&word_raw)` returns true, the engine recomputes the diff from the
 pre-keystroke screen to the raw English word, then commits the word and
-clears composing state.
+clears composing state. `word_raw_string()` (FFI
+`uvie_engine_raw_chars`) exposes the WHOLE word's keystrokes — hosts
+need that for "Escape restores the literal input": `raw_chars_string`
+only holds the composing syllable, so after a V-C-V split or a
+dictionary commit it would restore a fragment (`master` → "ter"). It
+returns EMPTY when the word outgrew the 24-keystroke buffer
+(`word_raw_overflowed`): the prefix was committed mid-word, so the raw
+no longer covers the render and the host must cancel instead of
+restoring.
 
 **Excluded** from the dictionary:
 - Words whose transform is a real Vietnamese word (from 22k word list):

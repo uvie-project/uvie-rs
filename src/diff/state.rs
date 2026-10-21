@@ -33,6 +33,27 @@ pub struct CommittedWord {
     pub rendered: OutBuffer,
 }
 
+/// Pre-override Vietnamese pipeline state, saved when the English
+/// dictionary override commits a word whose keystrokes the pipeline
+/// collapsed. A doubled Telex key is the common case: "mass" commits the
+/// raw word, but the pipeline's own raw is "mas" — the second `s` cancelled
+/// the sắc. Committing pins the rest of the word to raw, so without this
+/// state the cancel sequence could never be typed again ("masster" stayed
+/// literal instead of rendering "master").
+///
+/// Restored when a consonant tail can no longer become a dictionary word:
+/// the pipeline resumes exactly where the override interrupted it and the
+/// whole word is re-rendered as Vietnamese.
+#[derive(Clone)]
+pub struct EnglishFallback {
+    /// Pipeline state right after the keystroke that fired the override.
+    pub snap: ComposingSnapshot,
+    /// V-C-V committed prefix that was on screen before the override.
+    pub diff_committed: OutBuffer,
+    /// `word_raw.len()` when the override fired — the tail starts here.
+    pub word_len: usize,
+}
+
 /// Diff-mode state: tracks what's on screen vs what the engine produced.
 pub struct DiffState {
     /// Raw keystroke buffer for feed_diff (chars, not bytes; needed for V-C-V split).
@@ -73,6 +94,10 @@ pub struct DiffState {
     /// instead of O(n) replay. Cleared on word boundary, commit, V-C-V split.
     pub snapshots: [Option<ComposingSnapshot>; 24],
     pub snapshot_count: usize,
+    /// Set when the current word outgrew the 24-keystroke `word_raw` buffer
+    /// (its prefix was committed mid-word). `word_raw` then describes only
+    /// the tail, so hosts must not restore it as the word's literal input.
+    pub word_raw_overflowed: bool,
     /// Sticky English passthrough: set when the per-keystroke dictionary
     /// override fires. While set, the rest of the current word passes
     /// through raw — the suffix must not be re-transformed as Vietnamese
@@ -82,6 +107,12 @@ pub struct DiffState {
     /// (diff_committed + prev_rendered) and the boundary commit path intact.
     /// Cleared on word boundary, commit, reset, and full-word erase.
     pub english_sticky: bool,
+    /// Pipeline state saved when the override committed a word whose raw
+    /// keystrokes the pipeline collapsed (see `EnglishFallback`). While set,
+    /// the sticky tail is checked against the dictionary prefixes and the
+    /// word falls back to Vietnamese rendering once it can no longer become
+    /// an English word.
+    pub english_fallback: Option<EnglishFallback>,
     /// Committed-word ring (oldest → newest), for post-commit editing.
     /// Only the newest entry is used by `edit_newest_diff`; the rest are
     /// kept for future multi-word-back editing. Cleared on commit-adjacent
@@ -116,7 +147,9 @@ impl DiffState {
             scratch_display: OutBuffer::new(),
             snapshots: [const { None }; 24],
             snapshot_count: 0,
+            word_raw_overflowed: false,
             english_sticky: false,
+            english_fallback: None,
             edit_history: [const { None }; 8],
             edit_history_start: 0,
             edit_history_len: 0,
@@ -141,7 +174,9 @@ impl DiffState {
             *s = None;
         }
         self.snapshot_count = 0;
+        self.word_raw_overflowed = false;
         self.english_sticky = false;
+        self.english_fallback = None;
         // Clear committed-word history
         for w in &mut self.edit_history {
             *w = None;
