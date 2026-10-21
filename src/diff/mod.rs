@@ -7,7 +7,7 @@ mod core;
 mod state;
 mod utils;
 
-pub use state::{ComposingSnapshot, DiffState};
+pub use state::{ComposingSnapshot, DiffState, EnglishFallback};
 
 use crate::engine::UltraFastViEngine;
 use state::CommittedWord;
@@ -74,8 +74,44 @@ impl Diffable for UltraFastViEngine {
         // (diff_committed + prev_rendered) and the boundary commit path
         // stay intact; key_log stays empty so backspace falls through to
         // the committed-prefix pop path.
+        //
+        // The tail stays raw only while the word can still become a
+        // dictionary word. A saved fallback means the override swallowed a
+        // cancel key, so a tail that the engine can read as Vietnamese — a
+        // consonant starting a new syllable whose render carries a Vietnamese
+        // transform ("mas"+"ter" → "tẻ") — is Vietnamese intent: the
+        // pre-override pipeline is restored and the whole word re-rendered
+        // ("masster" → "master"). Anything else keeps the raw passthrough:
+        // vowel tails merge into the committed syllable and garble the word
+        // ("lesser" → "lể"), and English compounds whose tail stays literal
+        // ("pass"+"key", "pass"+"code", "loss"+"less") are English intent.
         if self.diff.english_sticky {
             let _ = self.diff.word_raw.try_push(ch);
+            if let Some(fb) = self.diff.english_fallback.as_ref() {
+                let word_len = fb.word_len;
+                // The first key typed after the dictionary word picks the
+                // direction: a vowel (or a non-letter) tail is an English
+                // continuation and keeps the raw passthrough for good.
+                let new_syllable = matches!(
+                    self.diff.word_raw.get(word_len),
+                    Some(&c)
+                        if c.is_ascii_alphabetic()
+                            && !Self::is_ascii_vowel(c.to_ascii_lowercase() as u8)
+                );
+                if !new_syllable {
+                    self.diff.english_fallback = None;
+                } else if !crate::tables::is_english_prefix(&self.diff.word_raw)
+                    && Self::tail_reads_as_vietnamese(
+                        &self.diff.word_raw,
+                        word_len,
+                        self.mode,
+                        self.is_simple_telex,
+                    )
+                    && self.word_renders_plain(&self.diff.word_raw)
+                {
+                    return self.fallback_to_vietnamese();
+                }
+            }
             let _ = self.diff.prev_rendered.push(ch);
             self.diff.diff_suffix.clear();
             let _ = self.diff.diff_suffix.push(ch);
@@ -146,6 +182,38 @@ impl Diffable for UltraFastViEngine {
             // Recompute diff from full_before → raw word.
             let (bs2, _) = Self::diff_into(&full_before, &target, &mut self.diff.diff_suffix);
 
+            // Keep the pre-override pipeline state when the commit swallows a
+            // cancel key: a dictionary word ending in a doubled tone key
+            // ("mass") commits the literal raw, while the pipeline's own raw
+            // is the collapsed form ("mas" — the second `s` cancelled the
+            // sắc). The commit pins the rest of the word to raw, so without
+            // this the cancel sequence could never be typed again ("masster"
+            // stayed literal instead of rendering "master"). `key_log` keeps
+            // every key of the syllable while `raw_chars` is the live,
+            // collapsed buffer, so the shorter buffer proves the key was
+            // consumed ("class" keeps both s's literal and is not a cancel).
+            if Self::ends_with_doubled_tone_key(&self.diff.word_raw, self.mode)
+                && self.diff.raw_chars.len() < self.diff.key_log.len()
+            {
+                self.diff.english_fallback = Some(EnglishFallback {
+                    snap: ComposingSnapshot {
+                        buf: self.buf.clone(),
+                        raw_len: self.raw_len,
+                        raw_chars: self.diff.raw_chars.clone(),
+                        key_log: self.diff.key_log.clone(),
+                        prev_rendered: self.diff.prev_rendered.clone(),
+                        prev_inner_render: self.diff.prev_inner_render.clone(),
+                        last_valid_raw_len: self.diff.last_valid_raw_len,
+                        last_valid_coda_start: self.diff.last_valid_coda_start,
+                        last_valid_out: self.diff.last_valid_out.clone(),
+                    },
+                    diff_committed: self.diff.diff_committed.clone(),
+                    word_len: self.diff.word_raw.len(),
+                });
+            } else {
+                self.diff.english_fallback = None;
+            }
+
             // Commit the English word to diff_committed and clear composing
             // state. This is CRITICAL: if we leave raw_chars/buf intact, the
             // next keystroke's V-C-V split will re-render the committed
@@ -213,7 +281,7 @@ impl Diffable for UltraFastViEngine {
         // the empty-key_log path below pops the committed prefix itself.
         if self.diff.english_sticky && !self.diff.prev_rendered.is_empty() {
             self.diff.prev_rendered.pop();
-            self.diff.word_raw.pop();
+            self.pop_word_raw();
             self.diff.diff_suffix.clear();
             return (1, &self.diff.diff_suffix);
         }
@@ -233,7 +301,7 @@ impl Diffable for UltraFastViEngine {
                     .all(|(b, c)| *b == *c as u8);
             if matches {
                 self.diff.prev_rendered.pop();
-                self.diff.word_raw.pop();
+                self.pop_word_raw();
                 if !self.diff.key_log.is_empty() {
                     self.diff.key_log.pop();
                 }
@@ -250,12 +318,13 @@ impl Diffable for UltraFastViEngine {
                 // Also pop word_raw to keep dict override tracking in sync.
                 // Without this, backspace+retype would leave stale chars in
                 // word_raw and the dict check would fail.
-                self.diff.word_raw.pop();
+                self.pop_word_raw();
                 self.diff.diff_suffix.clear();
                 // The whole word was erased — leave sticky passthrough so
                 // fresh typing is Vietnamese again.
                 if self.diff.word_raw.is_empty() {
                     self.diff.english_sticky = false;
+                    self.diff.english_fallback = None;
                 }
                 return (1, &self.diff.diff_suffix);
             }
@@ -277,7 +346,7 @@ impl Diffable for UltraFastViEngine {
             self.diff.key_log = snap.key_log;
             // word_raw is not snapshotted — just pop the last char, matching
             // key_log's pop in the replay path below.
-            self.diff.word_raw.pop();
+            self.pop_word_raw();
             self.diff.prev_rendered = snap.prev_rendered.clone();
             self.diff.prev_inner_render = snap.prev_inner_render;
             self.diff.last_valid_raw_len = snap.last_valid_raw_len;
@@ -294,7 +363,7 @@ impl Diffable for UltraFastViEngine {
         // e.g. after V-C-V split or when snapshots were exhausted).
         let prev = self.diff.prev_rendered.clone();
         self.diff.key_log.pop();
-        self.diff.word_raw.pop();
+        self.pop_word_raw();
         let log: crate::buffers::CharVec<24> = self.diff.key_log.iter().copied().collect();
         self.rebuild_composing(&log);
         let new = self.diff.prev_rendered.clone();
@@ -374,7 +443,9 @@ impl Diffable for UltraFastViEngine {
         // the following word as ghost characters and corrupts macro matching.
         self.diff.diff_committed.clear();
         self.diff.diff_suffix.clear();
+        self.diff.word_raw_overflowed = false;
         self.diff.english_sticky = false;
+        self.diff.english_fallback = None;
         // Clear the snapshot stack — stale snapshots from the committed word
         // must not survive, otherwise a backspace after commit would restore
         // state from the previous word, corrupting the engine.

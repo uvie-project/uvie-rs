@@ -28,7 +28,7 @@ mod nucleus;
 mod onset;
 
 pub use coda::{is_legal_coda, tone_allowed_for_coda};
-pub use english::is_english_override;
+pub use english::{is_english_override, is_english_prefix};
 pub use glide::{is_vowel_base, onset_is_gi, onset_is_qu};
 pub use nucleus::{
     is_legal_nucleus, nucleus_allows_coda, nucleus_tone_target, rhyme_coda_compatible,

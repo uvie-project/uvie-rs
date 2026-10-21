@@ -291,6 +291,96 @@ fn diff_double_tone_cancel() {
 }
 
 #[test]
+fn diff_double_tone_cancel_survives_dictionary_commit() {
+    // A dictionary word ending in a doubled tone key ("mass") commits the
+    // literal raw, but the pipeline's own raw is the collapsed form ("mas").
+    // The commit must not pin the rest of the word to raw: a consonant tail
+    // that cannot become a dictionary word resumes Vietnamese processing, so
+    // the cancel keeps working for every such word.
+    assert_diff("masster", "master");
+    // A bare consonant tail carries no Vietnamese transform, so the literal
+    // keystrokes stay until the tail reads as Vietnamese ("masste" → the
+    // tone in "ter" is what re-opens the word).
+    assert_diff("masst", "masst");
+    assert_diff("masste", "masste");
+    assert_diff("passter", "paster");
+    assert_diff("misster", "mister");
+    assert_diff("messter", "mester");
+    assert_diff("tosster", "toster");
+    // Word boundaries commit the same way.
+    assert_diff("masster ", "master ");
+    assert_diff("masster.", "master.");
+}
+
+#[test]
+fn diff_double_tone_cancel_keeps_dictionary_words() {
+    // The dictionary still protects the words themselves and every word
+    // they can grow into — only a non-dictionary consonant tail re-opens
+    // the cancel.
+    assert_diff("mass", "mass");
+    assert_diff("pass", "pass");
+    assert_diff("boss", "boss");
+    assert_diff("less", "less");
+    assert_diff("massive", "massive");
+    assert_diff("massively", "massively");
+    assert_diff("masses", "masses");
+    assert_diff("lesser", "lesser");
+    assert_diff("passing", "passing");
+    assert_diff("passport", "passport");
+    assert_diff("password", "password");
+    assert_diff("passerby", "passerby");
+    assert_diff("correctness", "correctness");
+    // English compounds whose tail stays literal are English intent — the
+    // cancel only re-opens the word when the tail reads as Vietnamese.
+    assert_diff("passkey", "passkey");
+    assert_diff("passcode", "passcode");
+    assert_diff("passphrase", "passphrase");
+    assert_diff("passthrough", "passthrough");
+    assert_diff("misspeak", "misspeak");
+    assert_diff("misspelt", "misspelt");
+    assert_diff("misspend", "misspend");
+    assert_diff("mossback", "mossback");
+}
+
+#[test]
+fn diff_double_tone_cancel_backspace_after_fallback() {
+    // Once the cancel is re-opened the word walks back like any composing
+    // word ("masster" → "maste" → "mas"), and erasing the whole word leaves
+    // fresh Vietnamese typing intact.
+    assert_eq!(diff_type_backspace("masster", 1), "maste");
+    assert_eq!(diff_type_backspace("masster", 3), "mas");
+    assert_eq!(diff_type_backspace("masster", 7), "");
+}
+
+#[test]
+fn diff_double_tone_cancel_backspace_past_dictionary_word() {
+    // Backspacing below the dictionary word the fallback was armed for must
+    // drop the saved state: restoring it would rewrite a word the user has
+    // already deleted ("mass" ⌫ "xt" must stay "masxt", not resurrect "mass").
+    let mut engine = UltraFastViEngine::new();
+    engine.set_modern_orthography(true);
+    let mut screen = String::new();
+    for ch in "mass".chars() {
+        let (bs, suffix) = engine.feed_diff(ch);
+        apply_diff(&mut screen, bs, suffix);
+    }
+    assert_eq!(screen, "mass");
+    let (bs, suffix) = engine.backspace_diff();
+    apply_diff(&mut screen, bs, suffix);
+    assert_eq!(screen, "mas");
+    for ch in "xter".chars() {
+        let (bs, suffix) = engine.feed_diff(ch);
+        apply_diff(&mut screen, bs, suffix);
+    }
+    assert_eq!(engine.word_raw_string().to_string(), "masxter");
+    assert!(
+        screen.starts_with("masx"),
+        "the deleted dictionary word came back: {screen:?}"
+    );
+    assert_eq!(screen, engine.current_output_diff().to_string());
+}
+
+#[test]
 fn diff_double_w_cancel() {
     assert_diff("showw", "show");
     assert_diff("oww", "ow");
@@ -405,4 +495,76 @@ fn diff_english_override_disabled() {
         apply_diff(&mut screen, bs, suffix);
     }
     assert_eq!(screen, "gôd");
+}
+// ------------------------------------------------------------------
+// Raw keystrokes of the whole word (Escape restores literal input)
+// ------------------------------------------------------------------
+
+/// Type `input` and return (on-screen text, raw keystrokes of the word).
+fn diff_type_screen_raw(input: &str) -> (String, String) {
+    let mut engine = UltraFastViEngine::new();
+    engine.set_modern_orthography(true);
+    let mut screen = String::new();
+    for ch in input.chars() {
+        let (bs, suffix) = engine.feed_diff(ch);
+        apply_diff(&mut screen, bs, suffix);
+    }
+    (screen, engine.word_raw_string().to_string())
+}
+
+#[test]
+fn diff_word_raw_spans_the_whole_word() {
+    // A host "escape restores the literal keystrokes" action needs the raw
+    // keys of the ENTIRE word, not just the composing syllable: the V-C-V
+    // split commits "má" and leaves only "ter" composing, but the user
+    // typed "master".
+    let (screen, raw) = diff_type_screen_raw("master");
+    assert_eq!(screen, "mátẻ");
+    assert_eq!(raw, "master");
+
+    // Same across a dictionary commit: the override commits "mass" and
+    // passes the tail through raw.
+    let (screen, raw) = diff_type_screen_raw("mass");
+    assert_eq!(screen, "mass");
+    assert_eq!(raw, "mass");
+
+    // And after the cancel fallback.
+    let (screen, raw) = diff_type_screen_raw("masster");
+    assert_eq!(screen, "master");
+    assert_eq!(raw, "masster");
+
+    // Two-syllable V-C-V words keep every keystroke too.
+    let (screen, raw) = diff_type_screen_raw("neebo");
+    assert_eq!(screen, "nêbo");
+    assert_eq!(raw, "neebo");
+}
+
+#[test]
+fn diff_word_raw_empty_after_raw_buffer_overflow() {
+    // A word longer than the 24-keystroke raw buffer commits its prefix
+    // mid-word; the raw no longer covers the rendered text, so the host must
+    // not restore it (an empty buffer means "cannot restore").
+    let mut engine = UltraFastViEngine::new();
+    engine.set_modern_orthography(true);
+    let mut screen = String::new();
+    for ch in "abcdefghijklmnopqrstuvwxyz".chars() {
+        let (bs, suffix) = engine.feed_diff(ch);
+        apply_diff(&mut screen, bs, suffix);
+    }
+    assert!(engine.is_composing_diff());
+    assert!(!screen.is_empty());
+    assert_eq!(engine.word_raw_string().to_string(), "");
+}
+
+#[test]
+fn diff_word_raw_clears_on_commit() {
+    let mut engine = UltraFastViEngine::new();
+    engine.set_modern_orthography(true);
+    for ch in "master".chars() {
+        engine.feed_diff(ch);
+    }
+    assert_eq!(engine.word_raw_string().to_string(), "master");
+    engine.commit_diff();
+    assert_eq!(engine.word_raw_string().to_string(), "");
+    assert!(!engine.is_composing_diff());
 }

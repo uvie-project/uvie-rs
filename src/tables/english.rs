@@ -15134,6 +15134,47 @@ fn compare_chars_to_str(chars: &[char], s: &str) -> Ordering {
     }
 }
 
+/// Returns `true` when some dictionary word starts with `word`
+/// (case-insensitive) — the typed prefix may still grow into a known
+/// English word.
+///
+/// Used by the sticky English passthrough: a tail typed after a dictionary
+/// hit stays raw while the word is still a dictionary word or a prefix of
+/// one ("mass" + "ive" → "massive"); once a consonant tail can no longer
+/// become one, the word is re-interpreted as Vietnamese ("masst" → "mast").
+#[inline]
+pub fn is_english_prefix(word: &[char]) -> bool {
+    if word.is_empty() {
+        return false;
+    }
+    let mut lo = 0usize;
+    let mut hi = ENGLISH_OVERRIDES.len();
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        match compare_chars_to_str(word, ENGLISH_OVERRIDES[mid]) {
+            Ordering::Equal => return true,
+            Ordering::Less => hi = mid,
+            Ordering::Greater => lo = mid + 1,
+        }
+    }
+    // `lo` is the first entry greater than `word`. If any entry extends
+    // `word`, it is the smallest entry above it, so it lands exactly here.
+    lo < ENGLISH_OVERRIDES.len() && starts_with_chars(ENGLISH_OVERRIDES[lo], word)
+}
+
+/// Case-insensitive `starts_with` for a `&str` against a `[char]` prefix.
+#[inline]
+fn starts_with_chars(s: &str, prefix: &[char]) -> bool {
+    let mut si = s.chars();
+    for &c in prefix {
+        match si.next() {
+            Some(sc) if sc.eq_ignore_ascii_case(&c) => {}
+            _ => return false,
+        }
+    }
+    true
+}
+
 /// Returns `true` if `word` (as a char slice) matches a known English word
 /// that should pass through verbatim instead of being transformed.
 ///
@@ -15177,5 +15218,20 @@ mod tests {
         assert!(!is_english_override(&['h', 'e', 'l', 'l', 'o'])); // not in list
         assert!(!is_english_override(&['a', 's'])); // too short
         assert!(!is_english_override(&[]));
+    }
+
+    #[test]
+    fn test_prefix_lookup() {
+        // Exact dictionary words are prefixes of themselves.
+        assert!(is_english_prefix(&['m', 'a', 's', 's']));
+        // Longer words still on their way to a dictionary word.
+        assert!(is_english_prefix(&['m', 'a', 's', 's', 'i'])); // "massive"
+        assert!(is_english_prefix(&['p', 'e', 'r', 'm'])); // "permission"
+        assert!(is_english_prefix(&['P', 'E', 'R', 'M'])); // case-insensitive
+        // No dictionary word extends these — the tail is not English intent.
+        assert!(!is_english_prefix(&['m', 'a', 's', 's', 't']));
+        assert!(!is_english_prefix(&['m', 'a', 's', 's', 't', 'e', 'r']));
+        assert!(!is_english_prefix(&['z', 'z', 'z', 'z']));
+        assert!(!is_english_prefix(&[]));
     }
 }

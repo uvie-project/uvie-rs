@@ -157,6 +157,28 @@ impl UltraFastViEngine {
         buf
     }
 
+    /// Copy the lossless raw keystrokes of the ENTIRE current word into a
+    /// `StackStr` — across V-C-V syllable splits, double-tone cancels and
+    /// English dictionary commits. Unlike `raw_chars_string` (the current
+    /// composing syllable only), this is what a host "escape restores the
+    /// literal keystrokes" action needs: "master" renders "mátẻ", but the
+    /// user typed "master".
+    ///
+    /// Returns an EMPTY buffer when the word outgrew the 24-keystroke raw
+    /// buffer: its prefix was committed mid-word, so restoring would delete
+    /// text the raw no longer covers. Hosts must treat empty as "cannot
+    /// restore" and leave the render alone.
+    pub fn word_raw_string(&self) -> StackStr<128> {
+        let mut buf = StackStr::new();
+        if self.diff.word_raw_overflowed {
+            return buf;
+        }
+        for &c in self.diff.word_raw.iter() {
+            let _ = buf.push(c);
+        }
+        buf
+    }
+
     pub fn current_composing(&self) -> &str {
         &self.out_buf
     }

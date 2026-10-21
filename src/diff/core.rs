@@ -7,6 +7,7 @@
 
 use crate::buffers::{CharVec, new_out_buffer};
 use crate::composing::Composable;
+use crate::diff::Diffable;
 use crate::engine::UltraFastViEngine;
 
 impl UltraFastViEngine {
@@ -78,6 +79,12 @@ impl UltraFastViEngine {
             self.diff.raw_chars.clear();
             self.diff.key_log.clear();
             self.diff.word_raw.clear();
+            // The word outgrew the 24-keystroke raw buffer: its prefix is now
+            // only on screen (committed above), so the raw keystrokes no
+            // longer describe the whole word. Hosts must not offer a literal
+            // restore for it (see `word_raw_string`).
+            self.diff.word_raw_overflowed = true;
+            self.diff.english_fallback = None;
             self.diff.prev_inner_render.clear();
             self.diff.last_valid_raw_len = 0;
             self.diff.last_valid_coda_start = 0;
@@ -266,6 +273,73 @@ impl UltraFastViEngine {
         );
         self.diff.prev_rendered.clear();
         let _ = self.diff.prev_rendered.push_str(display_composed);
+        (bs, &self.diff.diff_suffix)
+    }
+
+    /// Abandon a sticky English passthrough and re-render the whole word as
+    /// Vietnamese.
+    ///
+    /// Called when the dictionary override committed a word whose keystrokes
+    /// the pipeline had collapsed (a doubled Telex key cancelled a tone —
+    /// "mass" is raw "mass" but the pipeline's raw is "mas") and the tail
+    /// typed after it can no longer become a dictionary word. The saved
+    /// pre-override pipeline state is restored, the tail is replayed through
+    /// the live pipeline, and the on-screen raw English text is diffed to
+    /// the resulting Vietnamese render — so "masst" → "mast" and "masster"
+    /// → "master" instead of the literal keystrokes.
+    ///
+    /// The replay goes through `feed_diff`, so a word that becomes a
+    /// dictionary word again mid-tail (e.g. "massive" + "x") re-enters the
+    /// sticky path exactly as if it had been typed that way.
+    pub(crate) fn fallback_to_vietnamese(&mut self) -> (usize, &str) {
+        let Some(fb) = self.diff.english_fallback.take() else {
+            // No saved state (the caller only calls this when one exists):
+            // keep the raw tail.
+            self.diff.diff_suffix.clear();
+            return (0, &self.diff.diff_suffix);
+        };
+
+        // Text currently on screen: the raw English word typed so far.
+        let mut screen_before = new_out_buffer();
+        let _ = screen_before.push_str(&self.diff.diff_committed);
+        let _ = screen_before.push_str(&self.diff.prev_rendered);
+
+        // Keystrokes typed after the dictionary word (includes the key that
+        // triggered this fallback — `word_raw` already holds it).
+        let tail: CharVec<24> = self
+            .diff
+            .word_raw
+            .iter()
+            .skip(fb.word_len)
+            .copied()
+            .collect();
+
+        // Restore the pipeline exactly as the override interrupted it.
+        self.buf = fb.snap.buf;
+        self.raw_len = fb.snap.raw_len;
+        self.diff.raw_chars = fb.snap.raw_chars;
+        self.diff.key_log = fb.snap.key_log;
+        self.diff.prev_rendered = fb.snap.prev_rendered;
+        self.diff.prev_inner_render = fb.snap.prev_inner_render;
+        self.diff.last_valid_raw_len = fb.snap.last_valid_raw_len;
+        self.diff.last_valid_coda_start = fb.snap.last_valid_coda_start;
+        self.diff.last_valid_out = fb.snap.last_valid_out;
+        self.diff.diff_committed = fb.diff_committed;
+        self.diff.word_raw.truncate(fb.word_len);
+        self.diff.english_sticky = false;
+
+        // Replay the tail through the live pipeline (snapshots, V-C-V splits
+        // and the dictionary override behave exactly as in a fresh typing
+        // session; the per-keystroke diffs are discarded below).
+        for &c in tail.iter() {
+            let _ = self.feed_diff(c);
+        }
+
+        // Diff the raw text that was on screen to the re-rendered word.
+        let mut full = new_out_buffer();
+        let _ = full.push_str(&self.diff.diff_committed);
+        let _ = full.push_str(&self.diff.prev_rendered);
+        let (bs, _) = Self::diff_into(&screen_before, &full, &mut self.diff.diff_suffix);
         (bs, &self.diff.diff_suffix)
     }
 

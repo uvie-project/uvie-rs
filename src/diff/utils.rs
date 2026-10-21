@@ -1,7 +1,8 @@
 //! Static helper methods used by the diff pipeline: diff computation, word
 //! boundary detection, V-C-V split point, and re-rendering.
 
-use crate::buffers::OutBuffer;
+use crate::buffers::{CharVec, OutBuffer};
+use crate::diff::Diffable;
 use crate::engine::UltraFastViEngine;
 use crate::modes::{IS_TONE_KEY, InputMethod, Mode};
 
@@ -184,6 +185,73 @@ impl UltraFastViEngine {
     pub(crate) fn is_tone_key_in_mode(ch: char, mode: &Mode) -> bool {
         let b = ch as u8;
         mode.classify[b as usize] & IS_TONE_KEY != 0
+    }
+
+    /// True when the word's last two keystrokes are the same tone key
+    /// ("mas**s**", "tim**ff**") — the standard Telex/VNI double-key cancel.
+    /// The pipeline consumes the second key, so the raw word and the
+    /// pipeline's raw diverge and the commit must not be treated as final.
+    #[inline]
+    pub(crate) fn ends_with_doubled_tone_key(word: &[char], mode: &Mode) -> bool {
+        let n = word.len();
+        n >= 2 && word[n - 1] == word[n - 2] && Self::is_tone_key_in_mode(word[n - 1], mode)
+    }
+
+    /// True when the keystrokes typed after a dictionary word read as
+    /// Vietnamese: rendered on their own, the tail carries at least one
+    /// Vietnamese transform (a tone or vowel-quality mark). English
+    /// continuations stay literal — "key", "code", "less", "through" — while
+    /// Vietnamese ones do not ("ter" → "tẻ", "tes" → "tés").
+    #[inline]
+    pub(crate) fn tail_reads_as_vietnamese(
+        word_raw: &[char],
+        word_len: usize,
+        mode: &'static Mode,
+        is_simple_telex: bool,
+    ) -> bool {
+        let tail: CharVec<24> = word_raw.iter().skip(word_len).copied().collect();
+        if tail.is_empty() {
+            return false;
+        }
+        !Self::rerender_chars(&tail, mode, is_simple_telex).is_ascii()
+    }
+
+    /// True when the word re-rendered as pure Vietnamese (no dictionary
+    /// override) stays plain letters — no Vietnamese diacritics. An English
+    /// word that would come out as "rétlesnes" is never what the user meant,
+    /// so the sticky raw passthrough keeps it.
+    ///
+    /// Runs a scratch replay of the word with the override disabled: only
+    /// reached while a cancel fallback is armed, never on the normal path.
+    pub(crate) fn word_renders_plain(&self, word_raw: &[char]) -> bool {
+        let mut scratch = UltraFastViEngine::new();
+        scratch.set_input_method(self.input_method());
+        scratch.set_modern_orthography(self.modern_orthography());
+        scratch.set_quick_start(self.quick_start());
+        scratch.set_quick_telex(self.quick_telex());
+        scratch.set_relaxed_coda(self.relaxed_coda());
+        scratch.set_english_override(false);
+        for &c in word_raw {
+            let _ = scratch.feed_diff(c);
+        }
+        scratch.current_output_diff().is_ascii()
+    }
+
+    /// Pop the last raw keystroke of the current word.
+    ///
+    /// Drops the saved English fallback once the word shrinks below the
+    /// dictionary word it was armed for: the saved pipeline snapshot no
+    /// longer matches the typed prefix, so restoring it would rewrite text
+    /// the user has already deleted.
+    #[inline]
+    pub(crate) fn pop_word_raw(&mut self) -> Option<char> {
+        let popped = self.diff.word_raw.pop();
+        if let Some(fb) = self.diff.english_fallback.as_ref() {
+            if self.diff.word_raw.len() < fb.word_len {
+                self.diff.english_fallback = None;
+            }
+        }
+        popped
     }
 
     #[inline]
