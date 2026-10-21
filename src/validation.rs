@@ -45,14 +45,18 @@ impl SyllableValidator for UltraFastViEngine {
 
         let onset_raw = &self.raw[..onset_end];
 
-        let nuc_len = (nucleus_end - nucleus_start).min(3);
+        // `partition_syllable` is cached and only guaranteed consistent for
+        // the buffer version it was computed for; saturate so a stale or
+        // degenerate partition can never underflow (debug) or read a wrapped
+        // length (release).
+        let nuc_len = nucleus_end.saturating_sub(nucleus_start).min(3);
         let mut nuc = ['\0'; 3];
         for i in 0..nuc_len {
             nuc[i] = self.buf.get(nucleus_start + i).base_no_tone();
         }
         let nuc_slice = &nuc[..nuc_len];
 
-        let coda_len = n - coda_start;
+        let coda_len = n.saturating_sub(coda_start);
         let mut coda_raw = [0u8; 4];
         let coda_take = coda_len.min(4);
         for i in 0..coda_take {
