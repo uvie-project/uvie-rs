@@ -6,6 +6,12 @@
 //! testable.
 
 /// What kind of key press a `KeyEvent` represents.
+///
+/// The variants the dispatcher treats differently are spelled out instead of
+/// being folded into a single `Break`/`Navigation` bucket: Enter starts a new
+/// sentence, Tab drops the composition (focus moves), Escape restores the raw
+/// keystrokes, Left/Right move the caret one character, and Forward Delete
+/// removes the character right of the caret without moving it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyKind {
     /// A printable character (already resolved for the active layout/shift
@@ -13,17 +19,33 @@ pub enum KeyKind {
     Char(char),
     /// Backspace.
     Backspace,
-    /// A word-terminating key that was not reported as a `Char`
-    /// (Enter, Tab, Escape).
-    Break,
-    /// Navigation/editing keys that move the caret or change selection
-    /// (arrows, Home, End, PageUp/Down, Delete).
+    /// Return / numpad Enter.
+    Enter,
+    /// Tab (focus change; the single-line caret model becomes invalid).
+    Tab,
+    /// Escape (restore the raw keystrokes of the composing word).
+    Escape,
+    /// Left arrow: caret one character left.
+    Left,
+    /// Right arrow: caret one character right.
+    Right,
+    /// Other caret movement (Up/Down/Home/End/PageUp/PageDown/Insert).
+    /// The single-line anchor model cannot track these, so they reset.
     Navigation,
-    /// A non-printable key we don't care about (F-keys, OEM keys, etc.).
+    /// Forward Delete: removes the character right of the caret.
+    ForwardDelete,
+    /// A word-terminating key that is not reported as a `Char` and has no
+    /// special caret behavior (e.g. Help on macOS).
+    Break,
+    /// A non-printable key we don't care about (F-keys, modifier keys, ...).
     Other,
 }
 
 /// A normalized key press as seen by the dispatcher.
+///
+/// Key *release* events are host bookkeeping (a consumed keyDown must swallow
+/// its matching keyUp on macOS/Linux) and never reach the dispatcher, which
+/// only sees presses and auto-repeats.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KeyEvent {
     pub kind: KeyKind,
@@ -31,6 +53,9 @@ pub struct KeyEvent {
     pub ctrl: bool,
     /// Alt held (either side).
     pub alt: bool,
+    /// Shift held (either side). Shift+arrow is a selection shortcut, not a
+    /// one-character caret move; Shift+Delete is a cut.
+    pub shift: bool,
     /// Win/Super/Meta key held (either side) - the chord belongs to the
     /// shell/OS (Win+R, Win+E, Win+arrows, ...), never to the engine.
     pub win: bool,
@@ -45,23 +70,60 @@ impl KeyEvent {
             kind: KeyKind::Char(ch),
             ctrl: false,
             alt: false,
+            shift: false,
             win: false,
             injected: false,
         }
     }
 
-    pub fn backspace() -> Self {
+    fn kind(kind: KeyKind) -> Self {
         Self {
-            kind: KeyKind::Backspace,
+            kind,
             ..Self::char('\0')
         }
+    }
+
+    pub fn backspace() -> Self {
+        Self::kind(KeyKind::Backspace)
+    }
+
+    pub fn enter() -> Self {
+        Self::kind(KeyKind::Enter)
+    }
+
+    pub fn tab() -> Self {
+        Self::kind(KeyKind::Tab)
+    }
+
+    pub fn escape() -> Self {
+        Self::kind(KeyKind::Escape)
+    }
+
+    pub fn left() -> Self {
+        Self::kind(KeyKind::Left)
+    }
+
+    pub fn right() -> Self {
+        Self::kind(KeyKind::Right)
+    }
+
+    pub fn navigation() -> Self {
+        Self::kind(KeyKind::Navigation)
+    }
+
+    pub fn forward_delete() -> Self {
+        Self::kind(KeyKind::ForwardDelete)
+    }
+
+    pub fn break_key() -> Self {
+        Self::kind(KeyKind::Break)
     }
 
     /// True when this key ends a word boundary and should commit the
     /// composing buffer (space, punctuation, Enter/Tab, etc.).
     pub fn is_word_break(&self) -> bool {
         match self.kind {
-            KeyKind::Break => true,
+            KeyKind::Enter | KeyKind::Tab | KeyKind::Break => true,
             KeyKind::Char(c) => is_word_break_char(c),
             _ => false,
         }

@@ -49,7 +49,7 @@ impl EngineSession {
 
     pub fn set_input_method(&mut self, method: InputMethod) {
         self.engine.set_input_method(method);
-        self.engine.clear();
+        self.engine.reset_diff();
     }
 
     pub fn input_method(&self) -> InputMethod {
@@ -94,8 +94,11 @@ impl EngineSession {
     }
 
     /// Drop all composing + committed state (app switch, caret jump, reset).
+    /// Must use the diff-aware reset: the plain core `clear()` leaves the
+    /// committed-word ring intact, so a later keystroke could still "edit"
+    /// a word the host has already forgotten.
     pub fn reset(&mut self) {
-        self.engine.clear();
+        self.engine.reset_diff();
     }
 
     pub fn is_composing(&self) -> bool {
@@ -112,5 +115,12 @@ impl EngineSession {
     /// uvie-mac's `getCurrentText()`.
     pub fn current_output(&self) -> String {
         self.engine.current_output_diff().to_string()
+    }
+
+    /// Raw keystrokes of the whole current word (across V-C-V splits, tone
+    /// cancels and dictionary commits). Empty when the word outgrew the
+    /// engine's raw buffer - the host must not restore it then.
+    pub fn raw_chars(&self) -> String {
+        self.engine.word_raw_string().to_string()
     }
 }

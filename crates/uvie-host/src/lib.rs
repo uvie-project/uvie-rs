@@ -16,12 +16,14 @@ pub mod engine_session;
 pub mod keys;
 pub mod macros;
 pub mod memory;
+pub mod sentence;
 
 pub use dispatcher::{Context, Dispatch, Dispatcher, InputAction, InputLanguage};
 pub use engine_session::{EngineOptions, EngineSession};
 pub use keys::{KeyEvent, KeyKind};
 pub use macros::{MacroEntry, MacroTable};
 pub use memory::{LanguageMemory, LanguagePref};
+pub use sentence::SentenceState;
 pub use uvie::InputMethod;
 
 #[cfg(test)]
