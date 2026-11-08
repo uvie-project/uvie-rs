@@ -2,7 +2,7 @@
 
 Ultra-fast Vietnamese input method engine (Telex, VNI) written in Rust.
 
-A `no_std` / `no-alloc` compatible library with **zero external dependencies**. Designed for sub-microsecond latency per keystroke through incremental state updates, positive syllable validation, and 100% stack-allocated hot paths.
+A zero-dependency library with **no heap allocation in the hot path**. Designed for sub-microsecond latency per keystroke through incremental state updates, positive syllable validation, and 100% stack-allocated buffers.
 
 **macOS implementation**: See [UVieMac](https://github.com/uvie-project/uvie-mac) for the macOS menu bar app that uses this engine.
 
@@ -19,8 +19,7 @@ A `no_std` / `no-alloc` compatible library with **zero external dependencies**. 
 - **Diff-based API**: Returns `(backspace_count, suffix_to_type)` per keystroke for minimal screen updates.
 - **O(1) backspace**: Snapshot stack mechanism eliminates O(n²) rebuild on backspace.
 - **No heap in hot path**: All buffer types (`StackStr`, `CharVec`, `SylBuf`) are stack-allocated — zero allocation per keystroke.
-- **Zero dependencies**: No `heapless`, no external crates — pure Rust, `no_std`-compatible out of the box.
-- **`no_std` compatible**: Works in embedded or constrained environments with `--no-default-features`.
+- **Zero dependencies**: No `heapless`, no external crates — pure Rust.
 
 ## Architecture
 
@@ -70,11 +69,8 @@ cargo bench
 cargo test
 ```
 
-For `no_std` builds:
-
-```bash
-cargo build --release --no-default-features
-```
+The crate ships `cdylib`/`staticlib` artifacts, which require `std`; the
+engine internals stay free of heap allocation regardless.
 
 ## Prebuilt releases
 
@@ -107,24 +103,6 @@ per-keystroke cost is comparable across scenarios and across releases.
 
 All diff scenarios go through `feed_diff` — the API the Swift app drives
 over FFI. The legacy `feed()` case is kept for cross-version comparison.
-
-### Historical: v2.1.0 optimization rounds (previous bench suite)
-
-| Benchmark | Original | v2.1.0 | Improvement |
-|-----------|----------|--------|-------------|
-| diff_short / phoos | 569 ns | 307 ns | **-46%** |
-| diff_workaround / chuaw | 637 ns | 374 ns | **-41%** |
-| diff_workaround / ngieengx | 1.18 µs | 674 ns | **-43%** |
-| diff_sentences / long | 10.2 µs | 5.99 µs | **-41%** |
-| diff_backspace / medium | 4.70 µs | 2.41 µs | **-49%** |
-| diff_backspace / long | 4.54 µs | 2.41 µs | **-47%** |
-
-Optimizations: single-pass char counting, `mem::swap`/`mem::take` instead of
-`String::clone`, `StackStr<N>` stack-allocated UTF-8 buffer, version-based
-`partition_syllable()` cache, branch prediction reordering, O(1) backspace
-via snapshot stack, and `thread_local` scratch engine for V-C-V splits.
-
-Full report: [thuupx.github.io/uvie-rs/criterion/report/](https://thuupx.github.io/uvie-rs/criterion/report/)
 
 ## License
 

@@ -581,8 +581,11 @@ impl Diffable for UltraFastViEngine {
         scratch.set_quick_telex(self.quick_telex());
         scratch.set_relaxed_coda(self.relaxed_coda());
         scratch.set_english_override(self.english_override());
-        let rendered: Vec<char> = entry.rendered.chars().collect();
-        let mut screen = String::new();
+        let mut rendered = crate::buffers::CharVec::<24>::new();
+        for c in entry.rendered.chars() {
+            let _ = rendered.try_push(c);
+        }
+        let mut screen = crate::buffers::new_out_buffer();
         let mut split = 0usize;
         // Syllable spans: a V-C-V split commits the first syllable — the
         // jump in `diff_committed` marks a rendered boundary, and the
