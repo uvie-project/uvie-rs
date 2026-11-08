@@ -23,10 +23,10 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Check formatting
-        run: cargo fmt -- --check
+        run: cargo fmt --all -- --check
 
       - name: Run Clippy
-        run: cargo clippy --all-targets --all-features
+        run: cargo clippy --workspace --all-targets --all-features
 
   build:
     name: Build & test (${{ matrix.os }})
@@ -63,11 +63,11 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run tests
-        run: cargo test
+        run: cargo test --workspace
 
       - name: Build release library
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --workspace --target ${{ matrix.target }}
 
       - name: Build macOS universal (macOS only)
         if: matrix.os == 'macos-15'
-        run: cargo build --release --target ${{ matrix.target2 }}
+        run: cargo build --release --workspace --target ${{ matrix.target2 }}

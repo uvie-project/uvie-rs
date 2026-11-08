@@ -3,10 +3,32 @@
 ## Build & Test Commands
 
 ```bash
-rtk cargo build --release          # Build release
-rtk cargo test --release           # Run all tests (317 tests)
+rtk cargo build --release          # Build the engine
+rtk cargo test --release           # Run engine tests
+rtk cargo test --workspace         # Engine + uvie-host tests
 rtk cargo bench --bench perf -- --warm-up-time 1 --measurement-time 3  # Benchmarks
 ```
+
+### Workspace layout
+
+The repo is a Cargo workspace. The root package is the `uvie` engine
+(`no_std`-capable, zero dependencies; `crates/` is excluded from the
+published package). `crates/uvie-host` is the platform-independent host
+policy crate (`publish = false`, depends on `uvie` + serde/serde_json).
+
+- `cargo build` / `cargo test` at the root still target only `uvie` (the
+  workspace root package is the default member), so uvie-mac's `build.sh`
+  keeps finding `target/release/libuvie.a`.
+- Use `--workspace` for the full build: `cargo test --workspace`,
+  `cargo clippy --workspace --all-targets`.
+- `uvie-host` owns the portable half of uvie-mac's event tap: `Pass`/
+  `Consume` dispatch, `InputAction` plans, macros, per-app language
+  memory, and the `KeyEvent` model. Platform front ends keep what cannot
+  be portable: the event source (CGEventTap / WH_KEYBOARD_LL / evdev),
+  the injection strategy, app identity and classification, accessibility
+  injection, global hotkeys and layout monitoring.
+- `uvie-win` and `uvie-linux` consume it as a git dependency on the same
+  tag as `uvie`, so engine and host policy can never skew.
 
 ### Benchmark suite (scenario-based, 2026-09)
 
