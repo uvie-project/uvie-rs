@@ -53,6 +53,19 @@ impl ToneHandler for UltraFastViEngine {
         let carrier = self.tone_carrier_idx();
 
         if carrier.is_none() {
+            // No nucleus yet, so there is nothing to carry a tone.
+            //
+            // After a modified consonant (`dd` -> `đ`, VNI `d9` -> `đ`) the
+            // tone key is deferred as `pending_tone`: it stays invisible
+            // (removed from `raw`, like the old silent swallow) until the
+            // first vowel arrives and adopts it — "ddjuowc" becomes "được"
+            // and "ddsu" becomes "đú". If the word ends or a non-vowel key
+            // comes first, the pending tone is dropped and "ddf" still
+            // renders "đ" (matching VNI "d91" -> "đ").
+            //
+            // Tone keys with no modified consonant at all ("bj...", "fj...")
+            // render literally, making the syllable invalid so the word
+            // passes through raw.
             let (_, ns, ne, _) = self.partition_syllable();
             if ne <= ns {
                 let has_modified_consonant = (0..self.buf.len()).any(|i| {
@@ -60,6 +73,9 @@ impl ToneHandler for UltraFastViEngine {
                     s.base == b'd' && s.flags & F_HORN != 0
                 });
                 if has_modified_consonant {
+                    if tone_val != 0 {
+                        self.pending_tone = Some((b, caps, tone_val));
+                    }
                     if self.raw_len > 0 {
                         self.raw_len -= 1;
                     }

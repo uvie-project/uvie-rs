@@ -42,6 +42,7 @@ impl UltraFastViEngine {
                 // Clear all state.
                 self.buf.clear();
                 self.raw_len = 0;
+                self.pending_tone = None;
                 self.out_buf.clear();
                 self.diff.clear();
 
@@ -60,6 +61,7 @@ impl UltraFastViEngine {
 
             self.buf.clear();
             self.raw_len = 0;
+            self.pending_tone = None;
             self.out_buf.clear();
             self.diff.clear();
             let _ = self.diff.diff_suffix.push(ch);
@@ -75,6 +77,7 @@ impl UltraFastViEngine {
             // the on-screen text consistent with diff_committed.
             self.buf.clear();
             self.raw_len = 0;
+            self.pending_tone = None;
             self.out_buf.clear();
             self.diff.raw_chars.clear();
             self.diff.key_log.clear();
@@ -119,8 +122,12 @@ impl UltraFastViEngine {
         // keystroke sequence (including the cancelling key) so that a later
         // backspace can replay it and re-trigger the cancel faithfully. Only
         // `raw_chars` (the live, lossy buffer) is swap+truncate'd.
-        let double_cancel_fired =
-            raw_len_after == raw_len_before && !self.diff.raw_chars.is_empty();
+        // A pending post-`dd` tone key also leaves raw_len unchanged (it is
+        // deferred, not cancelled) — it must not trigger the swap+truncate
+        // below, which would eat a real keystroke from raw_chars.
+        let double_cancel_fired = raw_len_after == raw_len_before
+            && !self.diff.raw_chars.is_empty()
+            && self.pending_tone.is_none();
         if double_cancel_fired {
             let last_idx = self.diff.raw_chars.len() - 1;
             if last_idx >= 1 {
@@ -195,7 +202,7 @@ impl UltraFastViEngine {
             && !self.diff.last_valid_out.is_empty()
             && self.diff.last_valid_raw_len < self.diff.raw_chars.len()
         {
-            let split = Self::find_split_point(&self.diff.raw_chars);
+            let split = self.find_split_point(&self.diff.raw_chars);
             // Vietnamese orthography rule: a syllable boundary inside a written
             // token must fall on a consonant (the next syllable's onset). A
             // split directly after a nucleus with no intervening consonant
@@ -204,7 +211,16 @@ impl UltraFastViEngine {
             // nucleus. Hiatus marks a non-Vietnamese token, so keep composing
             // raw instead of committing a syllable pair (fixes "theeo" →
             // "thêo" and "ressearch" → "rếarch").
-            if split > 0 && split < self.diff.raw_chars.len() - 1 {
+            //
+            // A split that leaves syllable 2 as the bare final vowel
+            // (split == len - 1, e.g. "dduowcju" → "được" + "u") is allowed
+            // only when a consonant run precedes the vowel — that run belongs
+            // to syllable 1's coda/tone keys. When the previous char is also
+            // a vowel the hiatus rule above still applies.
+            let raw_len = self.diff.raw_chars.len();
+            let prev_is_consonant =
+                split > 0 && !Self::is_ascii_vowel(self.diff.raw_chars[split - 1] as u8);
+            if split > 0 && split < raw_len && (split < raw_len - 1 || prev_is_consonant) {
                 let committed_raw: CharVec<24> =
                     self.diff.raw_chars[..split].iter().copied().collect();
                 let new_syl_raw: CharVec<24> =
@@ -218,6 +234,7 @@ impl UltraFastViEngine {
                 // Restart engine with new syllable.
                 self.buf.clear();
                 self.raw_len = 0;
+                self.pending_tone = None;
                 self.out_buf.clear();
                 for &c in new_syl_raw.iter() {
                     self.feed(c);
@@ -360,6 +377,7 @@ impl UltraFastViEngine {
         // Reset the core engine to a clean slate (mirrors `clear()` minus diff).
         self.buf.clear();
         self.raw_len = 0;
+        self.pending_tone = None;
         self.out_buf.clear();
         self.committed.clear();
         self.syl_structure.clear();

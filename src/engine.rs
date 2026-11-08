@@ -16,6 +16,14 @@ pub struct UltraFastViEngine {
     /// Uppercase flag for each raw keystroke.
     pub(crate) raw_caps: [bool; 24],
     pub(crate) raw_len: usize,
+    /// Tone key typed right after a modified consonant (`dd`/`d9`) before
+    /// any vowel — deferred until the first vowel arrives so "ddjuowc" can
+    /// still become "được". Stores `(raw byte, caps, tone value)`: the key
+    /// is removed from `raw` while pending (invisible, like the old silent
+    /// swallow — "ddf" still renders "đ") and restored into `raw` just
+    /// before the adopting vowel is appended, so committed re-renders keep
+    /// the tone.
+    pub(crate) pending_tone: Option<(u8, bool, u8)>,
     /// Rendered output of the current composing word.
     pub(crate) out_buf: OutBuffer,
     /// Accumulated committed text (prior complete words + boundary chars).
@@ -59,6 +67,7 @@ impl UltraFastViEngine {
             raw: [0u8; 24],
             raw_caps: [false; 24],
             raw_len: 0,
+            pending_tone: None,
             out_buf: new_out_buffer(),
             committed: new_out_buffer(),
             input_method,
@@ -226,6 +235,7 @@ impl UltraFastViEngine {
     pub fn clear(&mut self) {
         self.buf.clear();
         self.raw_len = 0;
+        self.pending_tone = None;
         self.out_buf.clear();
         self.committed.clear();
         self.syl_structure.clear();
@@ -238,6 +248,7 @@ impl UltraFastViEngine {
         let _ = self.committed.push_str(&self.out_buf);
         self.buf.clear();
         self.raw_len = 0;
+        self.pending_tone = None;
         self.out_buf.clear();
     }
 
@@ -245,6 +256,7 @@ impl UltraFastViEngine {
     pub fn backspace(&mut self) -> &str {
         if self.raw_len > 0 {
             self.raw_len -= 1;
+            self.pending_tone = None;
             let target_len = self.raw_len;
             self.buf.clear();
             self.raw_len = 0;
@@ -278,6 +290,7 @@ impl UltraFastViEngine {
             let _ = self.committed.push_str(&self.out_buf);
             self.buf.clear();
             self.raw_len = 0;
+            self.pending_tone = None;
             self.out_buf.clear();
             let _ = self.committed.push(key);
             return &self.out_buf;

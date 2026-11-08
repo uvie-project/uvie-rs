@@ -236,6 +236,7 @@ impl Diffable for UltraFastViEngine {
             // Clear core engine state (matches reset_diff minus diff.clear()).
             self.buf.clear();
             self.raw_len = 0;
+            self.pending_tone = None;
             self.out_buf.clear();
             self.committed.clear();
             self.syl_structure.clear();
@@ -397,6 +398,7 @@ impl Diffable for UltraFastViEngine {
             // Clear all state.
             self.buf.clear();
             self.raw_len = 0;
+            self.pending_tone = None;
             self.out_buf.clear();
             self.committed.clear();
             self.syl_structure.clear();
@@ -427,6 +429,7 @@ impl Diffable for UltraFastViEngine {
 
         self.buf.clear();
         self.raw_len = 0;
+        self.pending_tone = None;
         self.out_buf.clear();
         self.committed.clear();
         self.syl_structure.clear();

@@ -10,6 +10,7 @@ use crate::validation::SyllableValidator;
 /// Core composing engine: classify and handle keystrokes, render output.
 pub(crate) trait Composable {
     fn process_key(&mut self, b: u8, caps: bool);
+    fn apply_pending_tone(&mut self, tone_val: u8);
     fn handle_consonant(&mut self, b: u8, caps: bool);
     fn handle_vowel(&mut self, b: u8, caps: bool);
     fn promote_uo_horn_rhyme(&mut self);
@@ -219,14 +220,34 @@ impl Composable for UltraFastViEngine {
     fn process_key(&mut self, b: u8, caps: bool) {
         let attr = self.mode.classify[b as usize];
 
+        // A tone deferred right after `dd`/`d9` (see `handle_tone_key`) only
+        // survives until the next keystroke: a vowel adopts it, anything
+        // else drops it — matching the old silent swallow for those cases.
+        let pending_tone = self.pending_tone.take();
+
         if attr & IS_TONE_KEY != 0 {
             self.handle_tone_key(b, caps);
         } else if attr & IS_MODIFIER != 0 {
             self.handle_modifier(b, caps);
         } else if attr & IS_VOWEL != 0 {
             self.handle_vowel(b, caps);
+            if let Some((_, _, tone_val)) = pending_tone {
+                self.apply_pending_tone(tone_val);
+            }
         } else {
             self.handle_consonant(b, caps);
+        }
+    }
+
+    /// Apply a deferred post-`dd` tone value onto the current tone carrier.
+    /// No-op when the vowel failed to create a nucleus.
+    #[inline]
+    fn apply_pending_tone(&mut self, tone_val: u8) {
+        if let Some(carrier) = self.tone_carrier_idx() {
+            let s = self.buf.get_mut(carrier);
+            s.tone = tone_val;
+            s.flags |= F_TONE_SET;
+            s.recompute_out();
         }
     }
 
@@ -341,6 +362,19 @@ impl Composable for UltraFastViEngine {
 
     #[inline]
     fn push_raw_key(&mut self, b: u8, caps: bool) {
+        if self.raw_len >= 24 {
+            return;
+        }
+        // A deferred post-`dd` tone key was removed from `raw` while
+        // pending; restore it just before the vowel that adopts it so the
+        // raw stream (and every re-render from it) keeps the tone key.
+        if let Some((pb, pcaps, _)) = self.pending_tone {
+            if self.mode.classify[b as usize] & IS_VOWEL != 0 && self.raw_len < 24 {
+                self.raw[self.raw_len] = pb;
+                self.raw_caps[self.raw_len] = pcaps;
+                self.raw_len += 1;
+            }
+        }
         if self.raw_len >= 24 {
             return;
         }

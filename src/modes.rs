@@ -9,6 +9,7 @@ pub enum InputMethod {
     SimpleTelex,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ResolverKind {
     Telex,
     Vni,

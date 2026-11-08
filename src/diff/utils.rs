@@ -59,23 +59,44 @@ impl UltraFastViEngine {
     }
 
     /// Returns true if the composed output equals the raw input (no Vietnamese transforms).
+    ///
+    /// `render_passthrough` preserves `đ`/`Đ` for a `dd` pair while emitting
+    /// the remaining raw keys literally, so a `dd`/`DD` pair in `raw` must be
+    /// allowed to match a single `đ`/`Đ` in `composed`. Without this every
+    /// `dd`-initial invalid word compared unequal ('d' vs 'đ'), `is_now_raw`
+    /// stayed false, and the optimistic-consonant / V-C-V paths never ran for
+    /// words like "ddeefbo" (which should render "đềbo" like "neefbo" → "nềbo").
     #[inline]
     pub(crate) fn is_raw_passthrough_slice(raw: &[char], composed: &str) -> bool {
         if raw.is_empty() {
             return true;
         }
         let mut ci = composed.chars();
-        for &r in raw {
+        let mut i = 0;
+        while i < raw.len() {
+            if i + 1 < raw.len()
+                && raw[i].eq_ignore_ascii_case(&'d')
+                && raw[i + 1].eq_ignore_ascii_case(&'d')
+            {
+                match ci.next() {
+                    Some('đ') | Some('Đ') => {
+                        i += 2;
+                        continue;
+                    }
+                    _ => return false,
+                }
+            }
             match ci.next() {
-                Some(c) if c == r => {}
+                Some(c) if c == raw[i] => {}
                 _ => return false,
             }
+            i += 1;
         }
         ci.next().is_none()
     }
 
     /// Find the V-C-V split point: index in raw_chars where the second syllable starts.
-    pub(crate) fn find_split_point(raw: &[char]) -> usize {
+    pub(crate) fn find_split_point(&self, raw: &[char]) -> usize {
         let n = raw.len();
         if n == 0 {
             return 0;
@@ -93,34 +114,141 @@ impl UltraFastViEngine {
         if !found_old_vowel {
             return 0;
         }
-        if last_old_vowel < new_vowel_pos {
-            let run_start = (last_old_vowel + 1..new_vowel_pos)
-                .find(|&i| !Self::is_ascii_vowel(raw[i] as u8))
-                .unwrap_or(new_vowel_pos);
-            // The consonant run may contain keys that were consumed as
-            // tone/modifier marks on the first syllable ("neefbo": 'f' is
-            // huyền on "nè", not an onset). The syllable boundary is the
-            // longest suffix of the run that is a legal Vietnamese onset —
-            // digraphs like "tr"/"ng" stay together, a stray tone key is
-            // left in syllable 1.
-            let run = &raw[run_start..new_vowel_pos];
-            if run.len() > 1 {
-                for take in (1..=run.len()).rev() {
-                    let tail = &run[run.len() - take..];
-                    let mut onset_raw = [0u8; 4];
-                    let mut k = 0usize;
-                    for &c in tail.iter().take(4) {
-                        onset_raw[k] = c as u8;
-                        k += 1;
-                    }
-                    if crate::tables::is_legal_onset(&onset_raw[..k]) {
-                        return new_vowel_pos - take;
+        if last_old_vowel >= new_vowel_pos {
+            return 0;
+        }
+        let run_start = (last_old_vowel + 1..new_vowel_pos)
+            .find(|&i| !Self::is_ascii_vowel(raw[i] as u8))
+            .unwrap_or(new_vowel_pos);
+        let run = &raw[run_start..new_vowel_pos];
+
+        // The consonant run may contain keys that were consumed as
+        // tone/modifier marks on the first syllable ("neefbo": 'f' is
+        // huyền on "nề", not an onset). The syllable boundary is the
+        // longest suffix of the run that is a legal Vietnamese onset —
+        // digraphs like "tr"/"ng" stay together, a stray tone key is
+        // left in syllable 1.
+        //
+        // When NO suffix is a legal onset, syllable 2 cannot start with a
+        // consonant at all: the whole run stays in syllable 1 (as coda and
+        // consumed tone keys) and syllable 2 is the bare new vowel —
+        // "vieetju" splits "việt" + "u", not "viê" + "tju".
+        let mut split = new_vowel_pos;
+        if run.len() == 1 {
+            split = run_start;
+        } else if run.len() > 1 {
+            for take in (1..=run.len()).rev() {
+                let tail = &run[run.len() - take..];
+                let mut onset_raw = [0u8; 4];
+                let mut k = 0usize;
+                for &c in tail.iter().take(4) {
+                    onset_raw[k] = c as u8;
+                    k += 1;
+                }
+                if crate::tables::is_legal_onset(&onset_raw[..k]) {
+                    split = new_vowel_pos - take;
+                    break;
+                }
+            }
+        }
+
+        // When syllable 1 carries a tone mark, the consonant run may contain
+        // keys that were already consumed as its coda/tone — stealing them
+        // as syllable 2's onset corrupts a finished toned syllable:
+        //
+        // - A tone key doubles as a legal onset: in "tieengsu" the 's' is
+        //   both sắc on "tiếng" and a possible "su" onset.
+        // - A coda consonant looks like an onset: in "dduowjcu" the 'c' is
+        //   the coda of "được", not the onset of "cu".
+        //
+        // Toneless syllables keep the plain onset migration ("neebo" →
+        // "nê"+"bo", "toocaa" → "tô"+"câ"): there the consonant was a
+        // literal coda and re-interpreting it as an onset is the feature.
+        // For a toned syllable, the onset migration is only legitimate when
+        // syllable 1 survives as real Vietnamese AND keeps everything but
+        // the migrated coda — "mast" commits "má" + "te" because "mát" minus
+        // its coda 't' is exactly "má". When that does not hold, the run
+        // contains keys already consumed as coda/tone and stealing them
+        // corrupts the finished syllable:
+        //
+        // - A tone key doubles as a legal onset: in "tieengsu" the 's' is
+        //   both sắc on "tiếng" and a possible "su" onset — "tieng" loses
+        //   the sắc, so the bare-vowel split "tiếng" + "u" wins.
+        // - A coda consonant looks like an onset: in "dduowjcu" the 'c' is
+        //   the coda of "được", and "dduowj" re-renders as "đuợ" (the horn
+        //   resolution breaks without the coda) — not "đượ".
+        //
+        // Toneless syllables skip this entirely ("neebo" → "nê"+"bo",
+        // "toocaa" → "tô"+"câ"): there the consonant was a literal coda and
+        // re-interpreting it as an onset is the feature. Two more guards:
+        //
+        // - `run.len() > 1`: a run holding a lone tone key ("meexyz": `[x]`,
+        //   "seejing": `[j]`) means the onset candidate IS the tone key;
+        //   stealing it is the documented prefix-commit behavior.
+        // - `syl1_is_raw`: if stealing the consonant leaves syllable 1 as
+        //   raw passthrough ("thuongse": "thuong" lacks the `w` for "ươ"),
+        //   the word is malformed and degrading to literal is the contract.
+        if run.len() > 1 && split < new_vowel_pos && Self::has_tone_mark(&self.diff.last_valid_out)
+        {
+            let syl1: CharVec<24> = raw[..split].iter().copied().collect();
+            let syl1_out = Self::rerender_chars(&syl1, self.mode, self.is_simple_telex);
+            let syl1_is_raw = Self::is_raw_passthrough_slice(&syl1[..], &syl1_out);
+            if !syl1_is_raw {
+                let stripped = Self::strip_trailing_coda(&self.diff.last_valid_out);
+                if &*syl1_out != stripped {
+                    let syl1_full: CharVec<24> = raw[..new_vowel_pos].iter().copied().collect();
+                    let full_out =
+                        Self::rerender_chars(&syl1_full, self.mode, self.is_simple_telex);
+                    if full_out == self.diff.last_valid_out {
+                        split = new_vowel_pos;
                     }
                 }
             }
-            return run_start;
         }
-        0
+
+        split
+    }
+
+    /// `last_valid_out` minus its trailing coda consonants — the rendered
+    /// form syllable 1 should have after a legitimate onset migration.
+    /// Coda consonants are ASCII letters; vowel letters (including the
+    /// i/u/o glide finals) and every non-ASCII toned vowel stop the strip.
+    fn strip_trailing_coda(text: &str) -> &str {
+        text.trim_end_matches(|c: char| {
+            c.is_ascii_alphabetic()
+                && !matches!(
+                    c,
+                    'a' | 'e' | 'i' | 'o' | 'u' | 'y' | 'A' | 'E' | 'I' | 'O' | 'U' | 'Y'
+                )
+        })
+    }
+
+    /// True when the rendered text carries a Vietnamese tone mark
+    /// (sắc/huyền/hỏi/ngã/nặng). The toneless Vietnamese alphabet is ASCII
+    /// plus ă/â/đ/ê/ô/ơ/ư (and capitals) — any other non-ASCII letter is a
+    /// toned form.
+    #[inline]
+    fn has_tone_mark(text: &str) -> bool {
+        text.chars().any(|c| {
+            c.is_alphabetic()
+                && !c.is_ascii()
+                && !matches!(
+                    c,
+                    'ă' | 'â'
+                        | 'đ'
+                        | 'ê'
+                        | 'ô'
+                        | 'ơ'
+                        | 'ư'
+                        | 'Ă'
+                        | 'Â'
+                        | 'Đ'
+                        | 'Ê'
+                        | 'Ô'
+                        | 'Ơ'
+                        | 'Ư'
+                )
+        })
     }
 
     /// Re-render a slice of chars through the engine and return rendered output.
