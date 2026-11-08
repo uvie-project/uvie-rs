@@ -4,7 +4,7 @@
 
 ```bash
 rtk cargo build --release          # Build release
-rtk cargo test --release           # Run all tests (277 tests)
+rtk cargo test --release           # Run all tests (317 tests)
 rtk cargo bench --bench perf -- --warm-up-time 1 --measurement-time 3  # Benchmarks
 ```
 
@@ -64,26 +64,10 @@ The engine has two APIs:
     re-records it. The host re-anchors its caret offset to 0.
   - Cost: zero on the per-keystroke hot path; the ring push is two small
     buffer copies once per space. The scratch replay only runs on edits.
-- **`edit_newest_diff(ch)`** — post-commit word editing (LabanKey-style;
-  added 2026-09, used by the Swift app via `uvie_engine_edit_newest`)
-  - On every `commit_diff()` the word is recorded into a small ring in
-    `DiffState` (`edit_history`, capacity 8: `raw` keystrokes + `rendered`
-    on-screen text). Pushed AFTER the state clears — `DiffState::clear()`
-    wipes the ring, so capture-then-push ordering matters.
-  - `edit_newest_diff(ch)` pops the newest entry, appends `ch` to its raw,
-    re-renders the extended word from scratch through the live pipeline
-    (`reset_diff()` + `feed_diff` replay — this rebuilds composing state,
-    V-C-V splits, the English override and the snapshot stack exactly as if
-    the extended word had just been typed), then diffs old-rendered → new
-    render and returns the `(backspaces, suffix)` instructions.
-  - Returns `None` when the ring is empty, the engine is composing, `ch` is
-    a word boundary, or the extended raw would overflow 24 chars — the host
-    then feeds the key normally.
-  - After a successful edit the engine is COMPOSING the edited word (the
-    replay pushed per-keystroke snapshots), so backspace walks it back like
-    normal composing and the next space re-records it.
-  - Cost: zero on the per-keystroke hot path; the ring push is two small
-    buffer copies once per space. The scratch replay only runs on edits.
+  - Supersedes the older `edit_newest_diff`/`uvie_engine_edit_newest` API
+    (removed): it only handled appending to the newest committed word,
+    while `edit_at_caret_diff` covers all 8 ring entries plus mid-word
+    positions.
 
 ## Performance Hotspots (measured 2026-07-03)
 
@@ -258,7 +242,7 @@ never legal in `is_valid_vietnamese`. Three pieces, mirroring the /uə/
    Trade-off: sequences like `afghan` now render `àgha` mid-word (the
    'f' resolves as a tone on 'a' + `gh` onset) — an accepted loss since
    f/j/w/z are never Vietnamese consonants, and the dictionary override
-   (regenerated to 15,416 words) restores them on completion.
+   (15,086 words) restores them on completion.
 
 ### Accuracy Improvement (2026-08)
 Onset↔nucleus distribution check (`onset_nucleus_compatible` in
@@ -285,7 +269,7 @@ Vietnamese (`befe`→`bề`, `sầm` via `safam`). Restricting it regresses 851
 Telex pairs. A dictionary-based check is the only clean fix.
 
 ### English Dictionary Override (2026-08, expanded 2026-10)
-`src/tables/english.rs` — 15,416 common English words that produce garbled
+`src/tables/english.rs` — 15,086 common English words that produce garbled
 Vietnamese+English hybrids (e.g. `character`→`chẩcter`, `safari`→`sầri`,
 `good`→`gôd`, `book`→`bôk`). Sorted static `&[&str]` array with O(log n)
 binary search — zero heap, zero dependencies, `no_std`-compatible.
@@ -405,7 +389,7 @@ Backspace in override state: after the override, the English word is in
 Performance: the per-keystroke clones (`committed_before`, `prev_before`)
 are gated by `word_raw.len() >= 4` (minimum dictionary word length),
 so the common path (1-3 chars typed) has zero overhead. The dictionary
-binary search is O(log 15670) ≈ 14 comparisons. Benchmarks show no
+binary search is O(log 15086) ≈ 14 comparisons. Benchmarks show no
 significant change on short benchmarks, -1.3% to -1.7% improvement on
 sentence benchmarks, and -6.8% to -8.1% improvement on backspace
 benchmarks (the old backspace override check is now dead code).
@@ -459,10 +443,8 @@ Implementation lives in `src/tables/coda.rs` (`is_legal_coda`,
 
 ## Benchmark Cases
 
-- `diff_short` — simple words exercising modifier/tone paths
-- `diff_workaround` — words with many if/else branches (V-C-V splits,
-  double-vowel circumflex, w modifier with multiple candidates,
-  mid-nucleus tone, tone + coda + reapply)
-- `diff_sentences` — long sentences with word boundaries
-- `diff_backspace` — type word then backspace all the way back
-- `compare_telex` — uvie vs vi-rs crate comparison
+Scenario-based groups in `benches/perf.rs` (see "Benchmark suite" above):
+`compound_word`, `random_keystroke_sequence`, `worst_case_deep_syllable`,
+`mixed_typing`, `rapid_backspace_burst`, `english_passthrough`, `feed`
+(legacy API). The old `diff_*`/`compare_telex` groups (vi-rs crate
+comparison) were removed when the suite was reworked.

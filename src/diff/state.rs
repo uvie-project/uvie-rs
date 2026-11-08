@@ -114,8 +114,9 @@ pub struct DiffState {
     /// an English word.
     pub english_fallback: Option<EnglishFallback>,
     /// Committed-word ring (oldest → newest), for post-commit editing.
-    /// Only the newest entry is used by `edit_newest_diff`; the rest are
-    /// kept for future multi-word-back editing. Cleared on commit-adjacent
+    /// `edit_at_caret_diff` walks all entries to resolve the caret offset;
+    /// a hit pops the target and every newer entry (their anchor geometry
+    /// is stale once the target is re-entered). Cleared on commit-adjacent
     /// invalidation paths (reset, full clear) and by `pop_newest_committed`.
     pub edit_history: [Option<CommittedWord>; 8],
     /// Index of the oldest entry in the ring.

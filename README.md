@@ -1,6 +1,6 @@
 # uvie-rs
 
-Ultra-fast Vietnamese input method engine (Telex, VNI) written in Rust.
+Ultra-fast Vietnamese input method engine (Telex, VNI, Simple Telex) written in Rust.
 
 A zero-dependency library with **no heap allocation in the hot path**. Designed for sub-microsecond latency per keystroke through incremental state updates, positive syllable validation, and 100% stack-allocated buffers.
 
@@ -8,7 +8,7 @@ A zero-dependency library with **no heap allocation in the hot path**. Designed 
 
 ## Features
 
-- **Telex & VNI**: Full support for both popular input methods.
+- **Telex, VNI & Simple Telex**: Full support for the popular input methods — including Simple Telex, where `w` always applies horn/breve to all vowel candidates (UniKey-compatible `vneHookAll` behavior).
 - **Modern orthography**: Optional tone placement per new standard (e.g. `hoas` → `hoá`).
 - **Relaxed coda mode**: Optional lenient coda validation for flexible typing.
 - **Post-coda tone keys on centering diphthongs** (UniKey-compatible): `viets` → `viết`, `tiens` → `tiến`, `hues` → `huế`, `kieux` → `kiễu` — the tone key applies after the coda and the render resolves to the written circumflex form.
@@ -47,12 +47,13 @@ engine.commit();
 
 The library compiles to `staticlib` and `cdylib`. The C API provides:
 
-- `uvie_engine_new()` / `uvie_engine_free()`
-- `uvie_engine_feed(engine, ch, out_buf, out_len)` — returns `backspaces + 1`
+- `uvie_engine_new()` / `uvie_engine_free()` / `uvie_engine_reset()`
+- `uvie_engine_feed(engine, ch, out_buf, out_len)` — returns the backspace count; `out_buf` receives the suffix to type
 - `uvie_engine_backspace(engine, out_buf, out_len)` / `uvie_engine_commit(...)`
 - `uvie_engine_edit_at(engine, caret_back, ch, out_buf, out_len, out_fwd_del)` — committed-word edit; `out_fwd_del` reports the forward-deletes a mid-word edit needs
-- `uvie_engine_raw_chars(engine, out_buf, out_len)` / `uvie_engine_current_output(...)` — raw typed keys vs rendered form (Escape-restore)
-- `uvie_engine_set_input_method(engine, method)` + configuration toggles (`uvie_engine_set_modern_orthography`, `uvie_engine_set_english_override`, …)
+- `uvie_engine_is_composing(engine)` — engine state query
+- `uvie_engine_raw_chars(engine, out_buf, out_len)` / `uvie_engine_current_output(...)` / `uvie_engine_committed_text(...)` — raw typed keys vs rendered form (Escape-restore)
+- `uvie_engine_set_input_method(engine, method)` + configuration toggles (`uvie_engine_set_modern_orthography`, `uvie_engine_set_english_override`, `uvie_engine_set_quick_telex`, `uvie_engine_set_quick_start`, `uvie_engine_set_relaxed_coda`)
 
 See [`src/ffi.rs`](src/ffi.rs) for the full C API.
 
