@@ -16,6 +16,17 @@
 //! - non-ASCII keys and keys the engine could not process are passed through
 //!   instead of being swallowed;
 //! - auto-capitalize keeps a per-app sentence state, in both languages.
+//!
+//! Deliberate deviations from uvie-mac:
+//! - every modifier chord resets the engine (mac only resets for chords that
+//!   can change text behind its back); over-resetting is safe;
+//! - punctuation is passed through after `commit()` instead of being fed and
+//!   re-posted, and the anchor moves to `-1` (the caret is one right of the
+//!   committed word), so typing a letter after a period starts a fresh word
+//!   instead of editing across the punctuation;
+//! - English mode passes characters through instead of re-posting them
+//!   synthetically (mac does that to suppress the OS autocomplete popup,
+//!   which is a macOS-only concern).
 
 use crate::engine_session::EngineSession;
 use crate::keys::{KeyEvent, KeyKind, is_feedable_ascii, is_word_break_char};
@@ -37,9 +48,13 @@ pub enum InputAction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Dispatch {
     /// Let the original key reach the application; optionally emit text
-    /// alongside (commit flush, restore-on-Escape).
+    /// alongside (commit flush, restore-on-Escape). The host must apply the
+    /// plan BEFORE delivering the original key.
     Pass(Vec<InputAction>),
     /// Swallow the original key and emit this replacement output instead.
+    /// An empty plan means "swallow, inject nothing": the key was absorbed by
+    /// the engine's raw buffer and renders nothing yet (the glyph appears on
+    /// the next keystroke).
     Consume(Vec<InputAction>),
 }
 
@@ -161,14 +176,7 @@ impl Dispatcher {
             return Dispatch::pass();
         }
 
-        // Shortcut chords (Ctrl+C, Alt+Tab, Win+R, ...) never reach the
-        // engine and cancel any composing word, like uvie-mac does.
-        if key.ctrl || key.alt || key.win {
-            self.reset();
-            return Dispatch::pass();
-        }
-
-        if ctx.app_excluded || ctx.non_latin_layout {
+        if ctx.app_excluded {
             self.reset();
             return Dispatch::pass();
         }
@@ -178,9 +186,26 @@ impl Dispatcher {
         // the current app.
         self.sentence.on_key_down();
 
+        // Shortcut chords (Ctrl+C, Alt+Tab, Win+R, ...) never reach the
+        // engine and cancel any composing word. uvie-mac resets only for the
+        // chords that can change text behind its back (selection, paste/cut/
+        // undo, dead keys, caret jumps); resetting for every chord is a
+        // deliberate, safer deviation.
+        if key.ctrl || key.alt || key.win {
+            self.reset();
+            return Dispatch::pass();
+        }
+
         let lang = ctx.language.unwrap_or(self.language);
+        // English mode keeps running before the non-Latin check: the sentence
+        // state machine is about the sentence, not the layout (uvie-mac order).
         if lang == InputLanguage::English {
             return self.handle_english(key);
+        }
+
+        if ctx.non_latin_layout {
+            self.reset();
+            return Dispatch::pass();
         }
 
         match key.kind {
@@ -261,11 +286,12 @@ impl Dispatcher {
                 push_plan(&mut plan, bs, fwd, &out);
                 return Dispatch::Consume(plan);
             }
-            // Off-boundary typing inside earlier text invalidates the
-            // committed-word history.
-            if self.caret_back > 0 {
-                self.reset();
-            }
+        }
+        // Off-boundary typing inside earlier text invalidates the
+        // committed-word history. Also runs with `edit_committed` off, so a
+        // stale anchor cannot fire an edit when the setting is re-enabled.
+        if !self.session.is_composing() && self.caret_back > 0 {
+            self.reset();
         }
 
         let (bs, out) = self.session.feed(transformed);

@@ -118,16 +118,6 @@ impl KeyEvent {
     pub fn break_key() -> Self {
         Self::kind(KeyKind::Break)
     }
-
-    /// True when this key ends a word boundary and should commit the
-    /// composing buffer (space, punctuation, Enter/Tab, etc.).
-    pub fn is_word_break(&self) -> bool {
-        match self.kind {
-            KeyKind::Enter | KeyKind::Tab | KeyKind::Break => true,
-            KeyKind::Char(c) => is_word_break_char(c),
-            _ => false,
-        }
-    }
 }
 
 /// ASCII characters that terminate a Vietnamese word on the engine side.

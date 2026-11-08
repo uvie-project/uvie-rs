@@ -48,6 +48,12 @@ impl EngineSession {
     }
 
     pub fn set_input_method(&mut self, method: InputMethod) {
+        // Settings hot-reload calls this on every mtime tick. Re-applying the
+        // same method must not drop a live composition (and the committed-word
+        // ring) mid-word.
+        if self.engine.input_method() == method {
+            return;
+        }
         self.engine.set_input_method(method);
         self.engine.reset_diff();
     }
@@ -101,8 +107,12 @@ impl EngineSession {
         self.engine.reset_diff();
     }
 
+    /// True while the engine owns text on screen. Must use the diff-aware
+    /// predicate: the core `is_composing()` only looks at the live raw buffer,
+    /// while the diff state can still own a committed prefix or an English
+    /// dictionary word after that buffer was cleared.
     pub fn is_composing(&self) -> bool {
-        self.engine.is_composing()
+        self.engine.is_composing_diff()
     }
 
     /// Text the engine has already auto-committed (V-C-V splits).

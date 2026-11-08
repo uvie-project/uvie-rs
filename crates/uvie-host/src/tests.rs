@@ -115,8 +115,7 @@ fn non_ascii_while_composing_commits_and_passes() {
     );
     assert_eq!(d.caret_back(), 0);
     assert!(
-        plan.iter()
-            .all(|a| matches!(a, InputAction::Text(t) if t.is_empty())),
+        plan.is_empty(),
         "no backspaces / no replacement text for the unhandled key: {plan:?}"
     );
 }
@@ -695,6 +694,141 @@ fn english_mode_enter_starts_new_sentence() {
     d.sentence.set_at_start(false);
     expect_pass(d.handle(KeyEvent::enter(), &Context::default()));
     assert!(d.sentence.is_at_start());
+}
+
+// MARK: - Diff-state ownership / reset regressions
+
+#[test]
+fn is_composing_tracks_dictionary_override_state() {
+    // The English-dictionary override commits the word into `diff_committed`
+    // and clears the core raw buffer; the host must still consider the word
+    // engine-owned or the next key can edit/pass through against stale state.
+    let mut d = dispatcher();
+    type_text(&mut d, "good");
+    assert!(
+        d.session.is_composing(),
+        "a dictionary word is still engine-owned text"
+    );
+}
+
+#[test]
+fn set_input_method_same_value_preserves_composition() {
+    let mut d = dispatcher();
+    type_text(&mut d, "vie");
+    assert!(d.session.is_composing());
+    // Settings hot-reload re-applies the same method: must be a no-op.
+    d.session.set_input_method(InputMethod::Telex);
+    assert!(d.session.is_composing());
+    // A real change still drops the state.
+    d.session.set_input_method(InputMethod::Vni);
+    assert!(!d.session.is_composing());
+}
+
+#[test]
+fn pointer_down_disarms_post_commit_edit() {
+    let mut d = dispatcher();
+    type_text(&mut d, "don");
+    expect_pass(d.handle(KeyEvent::char(' '), &Context::default()));
+    expect_pass(d.handle(KeyEvent::left(), &Context::default()));
+    assert_eq!(d.caret_back(), 0);
+    d.on_pointer_down();
+    let plan = expect_consume(d.handle(KeyEvent::char('s'), &Context::default()));
+    assert_eq!(
+        plan,
+        vec![text("s")],
+        "the click must drop the edit history"
+    );
+}
+
+#[test]
+fn non_latin_layout_passes_and_resets() {
+    let mut d = dispatcher();
+    type_text(&mut d, "vie");
+    let ctx = Context {
+        non_latin_layout: true,
+        ..Default::default()
+    };
+    assert!(expect_pass(d.handle(KeyEvent::char('a'), &ctx)).is_empty());
+    assert!(!d.session.is_composing());
+}
+
+#[test]
+fn language_toggle_resets_composition() {
+    let mut d = dispatcher();
+    type_text(&mut d, "vie");
+    d.set_language(InputLanguage::English);
+    assert!(!d.session.is_composing());
+
+    d.set_language(InputLanguage::Vietnamese);
+    type_text(&mut d, "vie");
+    assert!(d.session.is_composing());
+    d.on_language_changed();
+    assert!(!d.session.is_composing());
+}
+
+#[test]
+fn punctuation_commits_and_starts_sentence() {
+    let mut d = dispatcher();
+    d.auto_capitalize = true;
+    type_text(&mut d, "hello");
+    assert!(d.session.is_composing());
+    let plan = expect_pass(d.handle(KeyEvent::char('.'), &Context::default()));
+    assert!(plan.is_empty());
+    assert!(!d.session.is_composing());
+    assert!(d.sentence.is_at_start(), "'.' starts a new sentence");
+
+    let plan = expect_consume(d.handle(KeyEvent::char('a'), &Context::default()));
+    assert_eq!(plan, vec![text("A")]);
+}
+
+#[test]
+fn edit_committed_word_mid_sentence_second_word() {
+    // "ab cd eg " - arrow back onto "cd" (the middle word) and edit it.
+    // Boundary for cd's end = len("eg") + 1 = 3 behind the anchor; the
+    // post-commit caret starts 1 right of it, so 4 arrow-lefts.
+    let mut d = dispatcher();
+    for word in ["ab", "cd", "eg"] {
+        type_text(&mut d, word);
+        expect_pass(d.handle(KeyEvent::char(' '), &Context::default()));
+    }
+    for _ in 0..("eg".len() + 1 + 1) {
+        expect_pass(d.handle(KeyEvent::left(), &Context::default()));
+    }
+    assert_eq!(d.caret_back(), 3);
+    // Typing at cd's end re-enters "cd" -> "cds": no backspaces needed
+    // (common prefix), just the suffix.
+    let plan = expect_consume(d.handle(KeyEvent::char('s'), &Context::default()));
+    assert_eq!(plan, vec![text("s")]);
+}
+
+#[test]
+fn edit_declines_at_word_start_and_resets() {
+    let mut d = dispatcher();
+    type_text(&mut d, "don");
+    expect_pass(d.handle(KeyEvent::char(' '), &Context::default()));
+    for _ in 0..4 {
+        expect_pass(d.handle(KeyEvent::left(), &Context::default()));
+    }
+    assert_eq!(d.caret_back(), 3);
+    // The word's first raw key cannot be edited: the key is inserted
+    // literally and the stale anchor is dropped.
+    let plan = expect_consume(d.handle(KeyEvent::char('s'), &Context::default()));
+    assert_eq!(plan, vec![text("s")]);
+    assert_eq!(d.caret_back(), 0);
+}
+
+#[test]
+fn edit_disabled_still_drops_stale_anchor() {
+    let mut d = dispatcher();
+    type_text(&mut d, "don");
+    expect_pass(d.handle(KeyEvent::char(' '), &Context::default()));
+    expect_pass(d.handle(KeyEvent::left(), &Context::default()));
+    expect_pass(d.handle(KeyEvent::left(), &Context::default()));
+    assert_eq!(d.caret_back(), 1);
+    d.edit_committed = false;
+    let plan = expect_consume(d.handle(KeyEvent::char('s'), &Context::default()));
+    assert_eq!(plan, vec![text("s")]);
+    assert_eq!(d.caret_back(), 0);
 }
 
 // MARK: - Macros / memory persistence
