@@ -79,6 +79,45 @@ size_t uvie_engine_edit_at(UvieEngine *engine,
                            size_t *out_fwd_del);
 
 /**
+ * Undo the last raw keystroke of the committed word ending at the caret
+ * (the same "undo one keystroke" semantics as Backspace, one step later).
+ * `caret_back` must match a word-end boundary of the committed-word history;
+ * mid-word carets and an empty history decline.
+ * Returns backspaces + 1 when handled (suffix written into `out_buf`), 0 when
+ * declined. The instruction applies AT the caret (which is at the word's
+ * end): erase `backspaces` chars, then type the suffix.
+ */
+size_t uvie_engine_backspace_at(UvieEngine *engine,
+                                size_t caret_back,
+                                char *out_buf,
+                                size_t out_len);
+
+/**
+ * Record a separator char (space / punctuation / Enter) typed right after the
+ * newest committed word. No-op while nothing is committed.
+ */
+void uvie_engine_note_separator(UvieEngine *engine);
+
+/**
+ * Record that a separator char right after the newest committed word was
+ * deleted. Returns 1 when a separator was accounted for, 0 otherwise.
+ */
+int uvie_engine_remove_separator(UvieEngine *engine);
+
+/**
+ * Separator chars currently on screen right after the newest committed word
+ * (the caret offset 0 sits just left of them).
+ */
+size_t uvie_engine_trailing_gap(const UvieEngine *engine);
+
+/**
+ * Caret offset (`caret_back`, screen chars from the end of the newest
+ * committed word) the host must adopt after the last successful edit.
+ * Negative means the caret is right of the new newest word's end.
+ */
+ptrdiff_t uvie_engine_last_caret_back(const UvieEngine *engine);
+
+/**
  * Reset all engine state (composing + committed + diff tracking).
  */
 void uvie_engine_reset(UvieEngine *engine);

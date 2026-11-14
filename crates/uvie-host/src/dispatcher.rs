@@ -281,7 +281,7 @@ impl Dispatcher {
                 self.session.edit_at(self.caret_back as usize, transformed)
             {
                 self.sentence.update_after(c);
-                self.caret_back = 0;
+                self.caret_back = self.session.last_caret_back_after_edit();
                 let mut plan = Vec::new();
                 push_plan(&mut plan, bs, fwd, &out);
                 return Dispatch::Consume(plan);
@@ -291,6 +291,14 @@ impl Dispatcher {
         // committed-word history. Also runs with `edit_committed` off, so a
         // stale anchor cannot fire an edit when the setting is re-enabled.
         if !self.session.is_composing() && self.caret_back > 0 {
+            self.reset();
+        }
+        // Right of the anchor the caret is only tracked through the trailing
+        // separators; anywhere else is an unseen caret jump.
+        if !self.session.is_composing()
+            && self.caret_back < 0
+            && self.caret_back != -(self.session.trailing_gap() as isize)
+        {
             self.reset();
         }
 
@@ -340,17 +348,7 @@ impl Dispatcher {
         let (bs, out) = self.session.commit();
         let mut plan = Vec::new();
         push_plan(&mut plan, bs, 0, &out);
-        if !was_composing && self.caret_back > 0 {
-            // Inserting a character inside committed text breaks the ring
-            // geometry.
-            self.reset();
-        } else {
-            self.caret_back = if was_composing {
-                -1
-            } else {
-                self.caret_back - 1
-            };
-        }
+        self.after_word_break(was_composing);
         self.sentence.update_after(c);
         Dispatch::Pass(plan)
     }
@@ -365,17 +363,30 @@ impl Dispatcher {
         let (bs, out) = self.session.commit();
         let mut plan = Vec::new();
         push_plan(&mut plan, bs, 0, &out);
-        if !was_composing && self.caret_back > 0 {
-            self.reset();
-        } else {
-            self.caret_back = if was_composing {
-                -1
-            } else {
-                self.caret_back - 1
-            };
-        }
+        self.after_word_break(was_composing);
         self.sentence.on_enter();
         Dispatch::Pass(plan)
+    }
+
+    /// Shared caret bookkeeping after a word-terminating key was passed
+    /// through: the app inserts the separator natively, at the caret, so the
+    /// newest committed word grows its on-screen gap and the caret moves one
+    /// right of it. When the caret is not at the end of the tracked separators
+    /// (inside committed text, or an untracked spot) the history is dropped.
+    fn after_word_break(&mut self, was_composing: bool) {
+        if was_composing {
+            // The commit just recorded the word; the separator lands right
+            // after it.
+            self.caret_back = 0;
+            self.session.note_separator();
+            self.caret_back = -1;
+        } else if self.caret_back <= 0 && self.caret_back == -(self.session.trailing_gap() as isize)
+        {
+            self.session.note_separator();
+            self.caret_back -= 1;
+        } else {
+            self.reset();
+        }
     }
 
     /// Escape: while composing, erase the rendered word and type the literal
@@ -423,7 +434,7 @@ impl Dispatcher {
 
     /// Forward Delete removes the character right of the caret; the caret
     /// itself does not move and no boundary character is inserted. Only a live
-    /// composition is committed (an idle commit pushes a phantom word).
+    /// composition is committed (an idle commit records nothing).
     /// Shift+Delete is a cut, which the engine cannot observe, so it resets.
     fn handle_forward_delete(&mut self, key: KeyEvent) -> Dispatch {
         if key.shift {
@@ -434,11 +445,18 @@ impl Dispatcher {
         if self.session.is_composing() {
             let (bs, out) = self.session.commit();
             push_plan(&mut plan, bs, 0, &out);
+            // The caret sits at the just-committed word's end.
+            self.caret_back = 0;
         }
-        if self.caret_back >= 0 {
+        // Forward Delete never moves the caret. Between the newest word's end
+        // and the end of its trailing separators it removes one separator
+        // (the gap shrinks, the distance back to the word is unchanged). At
+        // the end of the gap it removes untracked text, which leaves the ring
+        // intact. Inside committed text the geometry breaks: reset.
+        if self.caret_back > 0 {
             self.reset();
-        } else {
-            self.caret_back += 1;
+        } else if ((-self.caret_back) as usize) < self.session.trailing_gap() {
+            self.session.remove_separator();
         }
         Dispatch::Pass(plan)
     }
@@ -453,19 +471,18 @@ impl Dispatcher {
         let (bs, out) = self.session.commit();
         let mut plan = Vec::new();
         push_plan(&mut plan, bs, 0, &out);
-        if !was_composing && self.caret_back > 0 {
-            self.reset();
-        } else {
-            self.caret_back = if was_composing {
-                -1
-            } else {
-                self.caret_back - 1
-            };
-        }
+        self.after_word_break(was_composing);
         Dispatch::Pass(plan)
     }
 
     fn handle_backspace(&mut self) -> Dispatch {
+        // Idle: the caret is either on a committed word's end (re-open the
+        // word and undo its last keystroke) or inside the separators right of
+        // it (delete one of them).
+        if !self.session.is_composing() {
+            return self.handle_idle_backspace();
+        }
+
         let (mut bs, mut out) = self.session.backspace();
         // A trailing raw key that renders nothing (a key the engine kept in
         // its raw buffer, e.g. "aow" -> screen "ao", "ddf" -> "đ") makes the
@@ -489,6 +506,7 @@ impl Dispatcher {
             if self.caret_back >= 0 {
                 self.reset();
             } else {
+                self.session.remove_separator();
                 self.caret_back += 1;
             }
             return Dispatch::pass();
@@ -500,6 +518,30 @@ impl Dispatcher {
         let mut plan = Vec::new();
         push_plan(&mut plan, bs, 0, &out);
         Dispatch::Consume(plan)
+    }
+
+    /// Backspace with nothing composing: undo the committed word ending at
+    /// the caret, or drop one of the separators right of it. Anything else is
+    /// an untracked caret and resets the history (the OS deletes the char).
+    fn handle_idle_backspace(&mut self) -> Dispatch {
+        if self.caret_back >= 0 {
+            if self.edit_committed {
+                if let Some((bs, out)) = self.session.backspace_at(self.caret_back as usize) {
+                    self.caret_back = self.session.last_caret_back_after_edit();
+                    let mut plan = Vec::new();
+                    push_plan(&mut plan, bs, 0, &out);
+                    return Dispatch::Consume(plan);
+                }
+            }
+            self.reset();
+            return Dispatch::pass();
+        }
+        if self.session.remove_separator() {
+            self.caret_back += 1;
+        } else {
+            self.reset();
+        }
+        Dispatch::pass()
     }
 
     /// If the on-screen word (committed prefix + composing) is a macro

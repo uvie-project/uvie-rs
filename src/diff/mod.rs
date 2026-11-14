@@ -9,8 +9,18 @@ mod utils;
 
 pub use state::{ComposingSnapshot, DiffState, EnglishFallback};
 
+use crate::buffers::OutBuffer;
 use crate::engine::UltraFastViEngine;
 use state::CommittedWord;
+
+/// Where a host caret offset (`caret_back`) lands in the committed-word ring.
+enum CaretHit {
+    /// Exactly at the end of ring entry `step` (0 = newest).
+    WordEnd(usize),
+    /// Strictly inside ring entry `step`, `chars_before` rendered chars left
+    /// of the caret.
+    MidWord(usize, usize),
+}
 
 /// Diff-mode input API: minimal-edit instructions for each keystroke.
 pub trait Diffable {
@@ -28,16 +38,21 @@ pub trait Diffable {
     /// (backspaces, suffix) that transform the on-screen word. `caret_back`
     /// is the host's caret distance (screen chars) back to the end of the
     /// newest committed word; it must exactly match a word-end boundary in
-    /// the ring (0 = newest word, then + rendered_len + 1 per older word).
+    /// the ring — 0 = newest word, then `end(k+1) = end(k) + rendered_len(k)
+    /// + gap(k+1)` where `gap` is the separators the host reported after each
+    /// word — or land strictly inside a word.
     /// A caret strictly inside a word fires a mid-word edit: the keystroke
     /// sequence is split at the position that produced the on-screen prefix
     /// ending at/before the caret, `ch` is inserted there, and the whole
-    /// word is re-rendered through the live pipeline.
+    /// word is re-rendered through a scratch replay of the pipeline.
     /// Returns (backspaces, forward_deletes, suffix): backspaces erase the
     /// word's prefix part left of the caret, forward_deletes erase the old
     /// tail right of the caret, and the suffix inserts the full re-rendered
     /// word — the caret lands at the edited word's end. `forward_deletes`
     /// is 0 for word-end boundary edits (no tail to rewrite).
+    /// The target entry is updated IN PLACE and every other entry survives;
+    /// the engine stays idle afterwards, so the host's new caret offset is
+    /// `last_caret_back_after_edit()`.
     /// Returns None when there is no matching boundary or interior, no
     /// committed word, `ch` is a word boundary, or the engine is composing.
     fn edit_at_caret_diff(&mut self, caret_back: usize, ch: char) -> Option<(usize, usize, &str)>;
@@ -55,14 +70,16 @@ pub trait Diffable {
 
 impl Diffable for UltraFastViEngine {
     fn feed_diff(&mut self, ch: char) -> (usize, &str) {
-        // Word boundary: commit, clear snapshots, return char directly.
+        // Word boundary: commit the composing word through the same rules as
+        // `commit_diff` (dictionary override, restore-raw, sentence context),
+        // record the separator for the caret geometry, then pass the char
+        // through. The committed-word ring survives — punctuation typed mid
+        // sentence must not destroy the post-commit edit history.
         if Self::is_word_boundary(ch) {
-            for s in &mut self.diff.snapshots {
-                *s = None;
-            }
-            self.diff.snapshot_count = 0;
-            let _ = self.diff.key_log.try_push(ch);
-            return self.feed_diff_core(ch);
+            let (bs, _) = self.commit_diff();
+            self.note_separator();
+            let _ = self.diff.diff_suffix.push(ch);
+            return (bs, &self.diff.diff_suffix);
         }
 
         // Sticky English passthrough: the dictionary override already fired
@@ -383,6 +400,15 @@ impl Diffable for UltraFastViEngine {
     }
 
     fn commit_diff(&mut self) -> (usize, &str) {
+        // Nothing composing: there is no word to record. An idle commit (a
+        // boundary key pressed after punctuation or a second Space) must not
+        // push an empty "phantom" entry — the host measures its caret offset
+        // from the real word, so a phantom would shift the geometry by one.
+        if self.diff.word_raw.is_empty() && !self.is_composing_diff() {
+            self.diff.diff_suffix.clear();
+            return (0, &self.diff.diff_suffix);
+        }
+
         // English dictionary override: if the full word matches a known
         // English word, replace the Vietnamese transform with the raw English
         // word. The diff engine computes the backspaces needed to transform
@@ -468,90 +494,23 @@ impl Diffable for UltraFastViEngine {
         if Self::is_word_boundary(ch) || self.is_composing_diff() {
             return None;
         }
-        let len = self.diff.edit_history_len;
-        if len == 0 {
-            return None;
+        // The host's caretBack is the ground truth: it must exactly match a
+        // word-end boundary or land strictly inside a word (double spaces,
+        // pastes and unseen caret jumps resolve to nothing — passthrough).
+        match self.resolve_caret(caret_back)? {
+            CaretHit::WordEnd(step) => self.edit_word_end(step, caret_back, ch),
+            CaretHit::MidWord(step, chars_before) => self.edit_mid_word(step, chars_before, ch),
         }
-        // Walk the ring from the newest word backward, accumulating the
-        // on-screen distance to each word-end boundary: boundary 0 = the
-        // newest word's end (the anchor), then + rendered_len + 1 boundary
-        // char (space/Enter/punct) per older word. The host's caretBack is
-        // the ground truth; if it doesn't exactly match a boundary (double
-        // spaces, pastes, unseen caret jumps), no edit fires — passthrough.
-        let ring_len = self.diff.edit_history.len();
-        let mut boundary = 0usize;
-        let mut target_step = None;
-        let mut midword: Option<(usize, usize)> = None;
-        for step in 0..len {
-            if caret_back == boundary {
-                target_step = Some(step);
-                break;
-            }
-            let idx = (self.diff.edit_history_start + len - 1 - step) % ring_len;
-            let entry = self.diff.edit_history[idx].as_ref()?;
-            let rlen = entry.rendered.chars().count();
-            // Caret strictly inside this word: (boundary, boundary + rlen).
-            // `chars_before` = rendered chars of this word left of the caret.
-            if caret_back > boundary && caret_back < boundary + rlen {
-                midword = Some((step, boundary + rlen - caret_back));
-                break;
-            }
-            boundary += rlen + 1;
-        }
-        if let Some((step, chars_before)) = midword {
-            return self.edit_mid_word(step, chars_before, ch);
-        }
-        let step = target_step?;
-        let target_idx = (self.diff.edit_history_start + len - 1 - step) % ring_len;
-        // Extended raw must fit the fixed keystroke buffer.
-        if self.diff.edit_history[target_idx].as_ref()?.raw.is_full() {
-            return None;
-        }
-        // Take the target word out of the ring, plus every NEWER entry:
-        // they sit after the caret on screen, so their anchor geometry is
-        // stale once the target is re-entered as the composing word. The
-        // older entries stay (they are still on screen before the caret).
-        let entry = self.diff.edit_history[target_idx].take()?;
-        let mut older: [Option<CommittedWord>; 8] = [const { None }; 8];
-        for i in 0..len - 1 - step {
-            let idx = (self.diff.edit_history_start + i) % ring_len;
-            older[i] = self.diff.edit_history[idx].take();
-        }
-        self.diff.edit_history_start = 0;
-        self.diff.edit_history_len = 0;
-
-        // Re-render the extended raw word from scratch through the live
-        // pipeline (feed_diff), so composing state, V-C-V splits, English
-        // override and the snapshot stack all match a fresh typing session.
-        let mut new_raw = entry.raw.clone();
-        let _ = new_raw.try_push(ch);
-        self.reset_diff();
-        for &c in new_raw.iter() {
-            let _ = self.feed_diff(c);
-        }
-
-        // Restore the older committed words (they are still on screen, left
-        // of the edited word, and remain editable).
-        for w in older.into_iter().flatten() {
-            self.diff.push_committed(w.raw, w.rendered);
-        }
-
-        // Assemble the new full on-screen word (same math as the commit path).
-        let mut full = crate::buffers::new_out_buffer();
-        let _ = full.push_str(&self.diff.diff_committed);
-        let _ = full.push_str(&self.diff.prev_rendered);
-
-        let (bs, _) = Self::diff_into(&entry.rendered, &full, &mut self.diff.diff_suffix);
-        Some((bs, 0, &self.diff.diff_suffix))
     }
 
     /// Mid-word caret edit: the caret sits strictly inside committed word
     /// `step` (0 = newest), `chars_before` rendered chars left of the caret.
     /// The stored raw keystrokes are split at the keystroke that produced
     /// the on-screen prefix ending at/before the caret, `ch` is inserted
-    /// there, and the extended sequence is replayed through feed_diff so
-    /// tone placement, V-C-V splits and the English override all behave
-    /// exactly as if the word had been typed that way. Returns
+    /// there, and the extended sequence is re-rendered through a scratch
+    /// replay so tone placement, V-C-V splits, the English override and the
+    /// commit-time restore rules all behave exactly as if the word had been
+    /// typed that way. Returns
     /// (backspaces = chars_before, forward_deletes = word tail,
     /// suffix = full new render) so the host can rewrite the whole word
     /// and land the caret at its end.
@@ -561,11 +520,9 @@ impl Diffable for UltraFastViEngine {
         chars_before: usize,
         ch: char,
     ) -> Option<(usize, usize, &str)> {
-        let len = self.diff.edit_history_len;
-        let ring_len = self.diff.edit_history.len();
-        let target_idx = (self.diff.edit_history_start + len - 1 - step) % ring_len;
-        let entry = self.diff.edit_history[target_idx].as_ref()?;
-        if entry.raw.is_full() {
+        let entry_raw = self.diff.committed(step)?.raw.clone();
+        let old_rendered = self.diff.committed(step)?.rendered.clone();
+        if entry_raw.is_full() {
             return None;
         }
 
@@ -574,15 +531,9 @@ impl Diffable for UltraFastViEngine {
         // each key. The split is the last keystroke whose rendered prefix
         // is preserved verbatim in the committed render and ends at or
         // before the caret.
-        let mut scratch = UltraFastViEngine::new();
-        scratch.set_input_method(self.input_method());
-        scratch.set_modern_orthography(self.modern_orthography());
-        scratch.set_quick_start(self.quick_start());
-        scratch.set_quick_telex(self.quick_telex());
-        scratch.set_relaxed_coda(self.relaxed_coda());
-        scratch.set_english_override(self.english_override());
+        let mut scratch = self.scratch_engine(self.english_override());
         let mut rendered = crate::buffers::CharVec::<24>::new();
-        for c in entry.rendered.chars() {
+        for c in old_rendered.chars() {
             let _ = rendered.try_push(c);
         }
         let mut screen = crate::buffers::new_out_buffer();
@@ -594,7 +545,7 @@ impl Diffable for UltraFastViEngine {
         let mut boundaries = [(0usize, 0usize); 8];
         let mut nb = 0usize;
         let mut last_cl = 0usize;
-        for (i, &c) in entry.raw.iter().enumerate() {
+        for (i, &c) in entry_raw.iter().enumerate() {
             let (bs, suffix) = scratch.feed_diff(c);
             for _ in 0..bs {
                 screen.pop();
@@ -623,7 +574,7 @@ impl Diffable for UltraFastViEngine {
         let insert_at = if syllable_key {
             // First span whose rendered end reaches the caret owns it
             // (caret at a syllable boundary tones the preceding syllable).
-            let mut at = entry.raw.len();
+            let mut at = entry_raw.len();
             for &(raw_b, rend_b) in boundaries.iter().take(nb) {
                 if chars_before <= rend_b {
                     at = raw_b;
@@ -640,41 +591,27 @@ impl Diffable for UltraFastViEngine {
             split
         };
 
-        // Take the target word plus every NEWER entry out of the ring —
-        // same geometry invalidation as the boundary edit.
-        let entry = self.diff.edit_history[target_idx].take()?;
-        let mut older: [Option<CommittedWord>; 8] = [const { None }; 8];
-        for i in 0..len - 1 - step {
-            let idx = (self.diff.edit_history_start + i) % ring_len;
-            older[i] = self.diff.edit_history[idx].take();
-        }
-        self.diff.edit_history_start = 0;
-        self.diff.edit_history_len = 0;
-
         let mut new_raw = crate::buffers::CharVec::<24>::new();
-        for &c in entry.raw.iter().take(insert_at) {
+        for &c in entry_raw.iter().take(insert_at) {
             let _ = new_raw.try_push(c);
         }
         let _ = new_raw.try_push(ch);
-        for &c in entry.raw.iter().skip(insert_at) {
+        for &c in entry_raw.iter().skip(insert_at) {
             let _ = new_raw.try_push(c);
         }
-        self.reset_diff();
-        for &c in new_raw.iter() {
-            let _ = self.feed_diff(c);
-        }
 
-        for w in older.into_iter().flatten() {
-            self.diff.push_committed(w.raw, w.rendered);
-        }
-
-        let mut full = crate::buffers::new_out_buffer();
-        let _ = full.push_str(&self.diff.diff_committed);
-        let _ = full.push_str(&self.diff.prev_rendered);
-
-        let tail = entry.rendered.chars().count() - chars_before;
+        let prev = self.diff.committed(step + 1).cloned();
+        let new_rendered = self.render_committed_word(&new_raw, prev.as_ref());
+        let tail = old_rendered.chars().count() - chars_before;
         self.diff.diff_suffix.clear();
-        let _ = self.diff.diff_suffix.push_str(&full);
+        let _ = self.diff.diff_suffix.push_str(&new_rendered);
+
+        let entry = self.diff.committed_mut(step)?;
+        entry.raw = new_raw;
+        entry.rendered = new_rendered;
+        // The caret lands at the edited word's end.
+        let new_caret_back = self.committed_word_end(step)? as isize;
+        self.diff.last_edit_caret_back = new_caret_back;
         Some((chars_before, tail, &self.diff.diff_suffix))
     }
 
@@ -711,6 +648,184 @@ impl Diffable for UltraFastViEngine {
 }
 
 impl UltraFastViEngine {
+    /// A separator char (space / punctuation / Enter) was typed right after
+    /// the newest committed word: grow its on-screen gap. No-op while nothing
+    /// is committed.
+    pub fn note_separator(&mut self) {
+        self.diff.note_separator();
+    }
+
+    /// A separator char right after the newest committed word was deleted.
+    /// Returns false when there is no separator left to account for.
+    pub fn remove_separator(&mut self) -> bool {
+        self.diff.remove_separator()
+    }
+
+    /// Separator chars currently on screen right after the newest committed
+    /// word (the caret offset 0 is just left of them).
+    pub fn trailing_gap(&self) -> usize {
+        self.diff.trailing_gap()
+    }
+
+    /// Caret offset (`caret_back`, screen chars from the end of the newest
+    /// committed word) the host must adopt after the last successful edit.
+    /// Negative means the caret is right of the new newest word's end.
+    pub fn last_caret_back_after_edit(&self) -> isize {
+        self.diff.last_edit_caret_back
+    }
+
+    /// Undo the last raw keystroke of the committed word ending at the caret
+    /// — the same "undo one keystroke" semantics as composing Backspace, one
+    /// step later. `caret_back` must match a word-end boundary; mid-word
+    /// carets and an empty ring decline.
+    ///
+    /// Returns `(backspaces, suffix)` to apply AT the caret (which is at the
+    /// word's end): erase `backspaces` chars, then type `suffix`. The entry is
+    /// updated in place; when its raw becomes empty the entry is removed and
+    /// its gap merges into the older neighbor. The engine stays idle, so the
+    /// host's new caret offset is `last_caret_back_after_edit()`.
+    pub fn backspace_at_caret_diff(&mut self, caret_back: usize) -> Option<(usize, &str)> {
+        if self.is_composing_diff() {
+            return None;
+        }
+        let CaretHit::WordEnd(step) = self.resolve_caret(caret_back)? else {
+            return None;
+        };
+        let old_rendered = self.diff.committed(step)?.rendered.clone();
+        let mut new_raw = self.diff.committed(step)?.raw.clone();
+        new_raw.pop()?;
+
+        if new_raw.is_empty() {
+            // The word is gone: drop the entry and let the older neighbor
+            // absorb its separators (they become adjacent on screen).
+            let older_gap = self.diff.committed(step + 1).map(|w| w.gap);
+            let removed = self.diff.remove_committed(step)?;
+            if let Some(older) = self.diff.committed_mut(step) {
+                older.gap += removed.gap;
+            }
+            // Erasing the newest word leaves the caret inside the merged
+            // separators (right of the new newest word's end); erasing an
+            // older one leaves the absolute offset unchanged.
+            self.diff.last_edit_caret_back = match (step, older_gap) {
+                (0, Some(gap)) => -(gap as isize),
+                (0, None) => 0,
+                _ => caret_back as isize,
+            };
+            let (bs, _) = Self::diff_into(&old_rendered, "", &mut self.diff.diff_suffix);
+            return Some((bs, &self.diff.diff_suffix));
+        }
+
+        let prev = self.diff.committed(step + 1).cloned();
+        let new_rendered = self.render_committed_word(&new_raw, prev.as_ref());
+        let (bs, _) = Self::diff_into(&old_rendered, &new_rendered, &mut self.diff.diff_suffix);
+        let entry = self.diff.committed_mut(step)?;
+        entry.raw = new_raw;
+        entry.rendered = new_rendered;
+        self.diff.last_edit_caret_back = caret_back as isize;
+        Some((bs, &self.diff.diff_suffix))
+    }
+
+    /// Append `ch` to the raw keystrokes of committed word `step` (0 =
+    /// newest) and re-render it in place. Every other ring entry survives —
+    /// newer words are still on screen and stay editable — and the engine
+    /// stays idle, so the caret ends at the edited word's end.
+    fn edit_word_end(
+        &mut self,
+        step: usize,
+        caret_back: usize,
+        ch: char,
+    ) -> Option<(usize, usize, &str)> {
+        let entry = self.diff.committed(step)?;
+        // Extended raw must fit the fixed keystroke buffer.
+        if entry.raw.is_full() {
+            return None;
+        }
+        let mut new_raw = entry.raw.clone();
+        let _ = new_raw.try_push(ch);
+        let old_rendered = entry.rendered.clone();
+
+        let prev = self.diff.committed(step + 1).cloned();
+        let new_rendered = self.render_committed_word(&new_raw, prev.as_ref());
+        let (bs, _) = Self::diff_into(&old_rendered, &new_rendered, &mut self.diff.diff_suffix);
+
+        let entry = self.diff.committed_mut(step)?;
+        entry.raw = new_raw;
+        entry.rendered = new_rendered;
+        // The caret is at this word's end; the newer entries are untouched.
+        self.diff.last_edit_caret_back = caret_back as isize;
+        Some((bs, 0, &self.diff.diff_suffix))
+    }
+
+    /// Resolve a host caret offset (`caret_back`, screen chars from the end of
+    /// the newest committed word) against the ring geometry:
+    /// `end(0) = 0`, `end(k+1) = end(k) + rendered_len(k) + gap(k+1)`.
+    fn resolve_caret(&self, caret_back: usize) -> Option<CaretHit> {
+        let mut end = 0usize;
+        for step in 0..self.diff.edit_history_len {
+            if caret_back == end {
+                return Some(CaretHit::WordEnd(step));
+            }
+            let entry = self.diff.committed(step)?;
+            let rlen = entry.rendered.chars().count();
+            // Strictly inside this word: (end, end + rlen).
+            if caret_back > end && caret_back < end + rlen {
+                return Some(CaretHit::MidWord(step, end + rlen - caret_back));
+            }
+            // gap(k) counts the separators AFTER word k — the ones between it
+            // and the newer word k-1.
+            let older = self.diff.committed(step + 1)?;
+            end += rlen + older.gap;
+        }
+        None
+    }
+
+    /// Word-end offset of ring entry `step` (0 = newest): the caret distance
+    /// from the end of the newest entry back to this word's end.
+    fn committed_word_end(&self, step: usize) -> Option<usize> {
+        let mut end = 0usize;
+        for k in 0..step {
+            let entry = self.diff.committed(k)?;
+            let older = self.diff.committed(k + 1)?;
+            end += entry.rendered.chars().count() + older.gap;
+        }
+        Some(end)
+    }
+
+    /// Render `raw` the way a fresh commit would: replay every keystroke on a
+    /// scratch engine with the live options, applying each diff to a screen
+    /// buffer, then apply the scratch's own `commit_diff` plan so the
+    /// dictionary override and the restore-raw rules behave exactly as at a
+    /// real word boundary. `prev` is the older committed neighbor, which the
+    /// sentence-context English rule reads.
+    fn render_committed_word(&self, raw: &[char], prev: Option<&CommittedWord>) -> OutBuffer {
+        let mut scratch = self.scratch_engine(self.english_override());
+        if let Some(prev) = prev {
+            scratch
+                .diff
+                .push_committed(prev.raw.clone(), prev.rendered.clone());
+        }
+        let mut screen = crate::buffers::new_out_buffer();
+        for &c in raw {
+            let (bs, suffix) = scratch.feed_diff(c);
+            for _ in 0..bs {
+                screen.pop();
+            }
+            let _ = screen.push_str(suffix);
+        }
+        // The word is still being edited in place: only the dictionary
+        // applies at this point. The restore-raw / context rules judge a
+        // FINISHED word and would turn an intermediate state into literal
+        // keys ("viêt" ⌫ + 'j' must give "việ", not "vieej").
+        if self.english_override() && crate::tables::is_english_override(raw) {
+            let (bs, suffix) = scratch.commit_diff();
+            for _ in 0..bs {
+                screen.pop();
+            }
+            let _ = screen.push_str(suffix);
+        }
+        screen
+    }
+
     /// Commit the current word as its literal raw keystrokes: diff the
     /// on-screen text (V-C-V committed prefix + composing render) to
     /// `word_raw`, clear every bit of composing state, and record the word for

@@ -31,6 +31,12 @@ pub struct CommittedWord {
     pub raw: CharVec<24>,
     /// Rendered text that is on screen for this word.
     pub rendered: OutBuffer,
+    /// Separator chars (space / punctuation / Enter) on screen right after
+    /// this word — the ones between it and the next newer word, or, for the
+    /// newest entry, the trailing ones typed after it. The host reports them
+    /// through `note_separator`/`remove_separator`; together with `rendered`
+    /// they are the whole caret geometry (`caret_back` from the newest end).
+    pub gap: usize,
 }
 
 /// Pre-override Vietnamese pipeline state, saved when the English
@@ -114,15 +120,19 @@ pub struct DiffState {
     /// an English word.
     pub english_fallback: Option<EnglishFallback>,
     /// Committed-word ring (oldest → newest), for post-commit editing.
-    /// `edit_at_caret_diff` walks all entries to resolve the caret offset;
-    /// a hit pops the target and every newer entry (their anchor geometry
-    /// is stale once the target is re-entered). Cleared on commit-adjacent
-    /// invalidation paths (reset, full clear) and by `pop_newest_committed`.
+    /// `edit_at_caret_diff` walks all entries to resolve the caret offset and
+    /// updates the target IN PLACE (newer entries stay editable). Cleared on
+    /// commit-adjacent invalidation paths (reset, full clear).
     pub edit_history: [Option<CommittedWord>; 8],
     /// Index of the oldest entry in the ring.
     pub edit_history_start: usize,
     /// Number of live entries in the ring.
     pub edit_history_len: usize,
+    /// Caret offset (`caret_back`, screen chars from the end of the newest
+    /// entry) the host must adopt after the last successful edit. Negative
+    /// means the caret is right of the new newest word's end (the edited word
+    /// was erased, leaving the caret inside the merged separators).
+    pub last_edit_caret_back: isize,
 }
 
 impl Default for DiffState {
@@ -154,6 +164,7 @@ impl DiffState {
             edit_history: [const { None }; 8],
             edit_history_start: 0,
             edit_history_len: 0,
+            last_edit_caret_back: 0,
         }
     }
 
@@ -184,9 +195,12 @@ impl DiffState {
         }
         self.edit_history_start = 0;
         self.edit_history_len = 0;
+        self.last_edit_caret_back = 0;
     }
 
     /// Push a committed word onto the ring (oldest evicted when full).
+    /// The new entry starts with no separators after it; the host reports the
+    /// ones typed after the word through `note_separator`.
     pub fn push_committed(&mut self, raw: CharVec<24>, rendered: OutBuffer) {
         if self.edit_history_len == self.edit_history.len() {
             self.edit_history[self.edit_history_start] = None;
@@ -194,23 +208,101 @@ impl DiffState {
             self.edit_history_len -= 1;
         }
         let idx = (self.edit_history_start + self.edit_history_len) % self.edit_history.len();
-        self.edit_history[idx] = Some(CommittedWord { raw, rendered });
+        self.edit_history[idx] = Some(CommittedWord {
+            raw,
+            rendered,
+            gap: 0,
+        });
         self.edit_history_len += 1;
     }
 
-    /// Pop and return the newest committed word, or None if the ring is empty.
-    pub fn pop_newest_committed(&mut self) -> Option<CommittedWord> {
-        if self.edit_history_len == 0 {
+    /// Ring slot of the entry at `step` (0 = newest, growing older).
+    #[inline]
+    fn ring_index(&self, step: usize) -> Option<usize> {
+        if step >= self.edit_history_len {
             return None;
         }
-        let idx = (self.edit_history_start + self.edit_history_len - 1) % self.edit_history.len();
-        self.edit_history_len -= 1;
-        self.edit_history[idx].take()
+        Some((self.edit_history_start + self.edit_history_len - 1 - step) % self.edit_history.len())
+    }
+
+    /// Borrow the committed word at `step` (0 = newest).
+    #[inline]
+    pub(crate) fn committed(&self, step: usize) -> Option<&CommittedWord> {
+        let idx = self.ring_index(step)?;
+        self.edit_history[idx].as_ref()
+    }
+
+    /// Mutably borrow the committed word at `step` (0 = newest).
+    #[inline]
+    pub(crate) fn committed_mut(&mut self, step: usize) -> Option<&mut CommittedWord> {
+        let idx = self.ring_index(step)?;
+        self.edit_history[idx].as_mut()
+    }
+
+    /// Separator chars on screen right after the newest committed word.
+    #[inline]
+    pub(crate) fn trailing_gap(&self) -> usize {
+        self.committed(0).map_or(0, |w| w.gap)
+    }
+
+    /// A separator char (space / punctuation / Enter) was typed right after
+    /// the newest committed word. No-op while nothing is committed.
+    #[inline]
+    pub(crate) fn note_separator(&mut self) {
+        if let Some(w) = self.committed_mut(0) {
+            w.gap += 1;
+        }
+    }
+
+    /// A separator char right after the newest committed word was deleted.
+    /// Returns false when there is no separator left to account for.
+    #[inline]
+    pub(crate) fn remove_separator(&mut self) -> bool {
+        match self.committed_mut(0) {
+            Some(w) if w.gap > 0 => {
+                w.gap -= 1;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Remove the committed word at `step` (0 = newest) and shift the ring so
+    /// the remaining entries keep their order. The caller merges the removed
+    /// entry's gap into the older neighbor (the separators that surrounded it
+    /// become adjacent on screen).
+    pub(crate) fn remove_committed(&mut self, step: usize) -> Option<CommittedWord> {
+        if step >= self.edit_history_len {
+            return None;
+        }
+        let ring_len = self.edit_history.len();
+        let mut removed = None;
+        let mut kept: [Option<CommittedWord>; 8] = [const { None }; 8];
+        let mut n = 0usize;
+        // Oldest → newest so `kept` keeps the ring order.
+        for s in (0..self.edit_history_len).rev() {
+            let idx = (self.edit_history_start + self.edit_history_len - 1 - s) % ring_len;
+            let word = self.edit_history[idx].take();
+            if s == step {
+                removed = word;
+            } else if let Some(word) = word {
+                kept[n] = Some(word);
+                n += 1;
+            }
+        }
+        for (i, word) in kept.into_iter().take(n).enumerate() {
+            self.edit_history[(self.edit_history_start + i) % ring_len] = word;
+        }
+        for i in n..ring_len {
+            self.edit_history[(self.edit_history_start + i) % ring_len] = None;
+        }
+        self.edit_history_len = n;
+        removed
     }
 
     /// Borrow the newest committed word that has raw keystrokes, skipping
-    /// empty entries (a boundary char pressed with nothing composing still
-    /// records an empty word).
+    /// empty entries (a commit with nothing composing records nothing, so
+    /// these only come from defensive paths).
     ///
     /// Read by the sentence-context English rule at word commit: the
     /// previous word must be on screen as plain English text.

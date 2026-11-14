@@ -345,19 +345,26 @@ impl UltraFastViEngine {
         !Self::rerender_chars(&tail, mode, is_simple_telex).is_ascii()
     }
 
-    /// A scratch engine that replays keystrokes exactly like the live one
-    /// (same input method, orthography and shorthand options), but with the
-    /// English dictionary override disabled - so a dictionary word typed into
-    /// it renders as the Vietnamese transform instead of committing raw.
-    fn scratch_word_engine(&self) -> UltraFastViEngine {
+    /// A scratch engine configured exactly like the live one, so a replay
+    /// behaves like a fresh typing session. `english_override` selects whether
+    /// the dictionary / restore-raw rules are active.
+    pub(crate) fn scratch_engine(&self, english_override: bool) -> UltraFastViEngine {
         let mut scratch = UltraFastViEngine::new();
         scratch.set_input_method(self.input_method());
         scratch.set_modern_orthography(self.modern_orthography());
         scratch.set_quick_start(self.quick_start());
         scratch.set_quick_telex(self.quick_telex());
         scratch.set_relaxed_coda(self.relaxed_coda());
-        scratch.set_english_override(false);
+        scratch.set_english_override(english_override);
         scratch
+    }
+
+    /// A scratch engine that replays keystrokes exactly like the live one
+    /// (same input method, orthography and shorthand options), but with the
+    /// English dictionary override disabled - so a dictionary word typed into
+    /// it renders as the Vietnamese transform instead of committing raw.
+    fn scratch_word_engine(&self) -> UltraFastViEngine {
+        self.scratch_engine(false)
     }
 
     /// True when the word re-rendered as pure Vietnamese (no dictionary

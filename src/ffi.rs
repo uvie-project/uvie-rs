@@ -298,6 +298,87 @@ pub extern "C" fn uvie_engine_edit_at(
     .unwrap_or(0)
 }
 
+/// Undo the last raw keystroke of the committed word ending at the caret
+/// (the same "undo one keystroke" semantics as Backspace, one step later).
+/// `caret_back` must match a word-end boundary of the committed-word history;
+/// mid-word carets and an empty history decline.
+/// Returns backspaces + 1 when handled (suffix written into `out_buf`), 0 when
+/// declined. The instruction applies AT the caret (which is at the word's
+/// end): erase `backspaces` chars, then type the suffix.
+#[unsafe(no_mangle)]
+pub extern "C" fn uvie_engine_backspace_at(
+    engine: *mut UvieEngine,
+    caret_back: usize,
+    out_buf: *mut c_char,
+    out_len: usize,
+) -> usize {
+    std::panic::catch_unwind(|| {
+        if engine.is_null() || out_buf.is_null() || out_len == 0 {
+            return 0;
+        }
+        let Some(mut e) = lock_engine(engine) else {
+            return 0;
+        };
+        let Some((backspaces, suffix)) = e.backspace_at_caret_diff(caret_back) else {
+            return 0;
+        };
+        write_output(suffix, out_buf, out_len);
+        backspaces + 1
+    })
+    .unwrap_or(0)
+}
+
+/// Record a separator char (space / punctuation / Enter) typed right after the
+/// newest committed word. No-op while nothing is committed.
+#[unsafe(no_mangle)]
+pub extern "C" fn uvie_engine_note_separator(engine: *mut UvieEngine) {
+    let _ = std::panic::catch_unwind(|| {
+        if let Some(mut e) = lock_engine(engine) {
+            e.note_separator();
+        }
+    });
+}
+
+/// Record that a separator char right after the newest committed word was
+/// deleted. Returns 1 when a separator was accounted for, 0 otherwise.
+#[unsafe(no_mangle)]
+pub extern "C" fn uvie_engine_remove_separator(engine: *mut UvieEngine) -> c_int {
+    std::panic::catch_unwind(|| {
+        let Some(mut e) = lock_engine(engine) else {
+            return 0;
+        };
+        if e.remove_separator() { 1 } else { 0 }
+    })
+    .unwrap_or(0)
+}
+
+/// Separator chars currently on screen right after the newest committed word
+/// (the caret offset 0 sits just left of them).
+#[unsafe(no_mangle)]
+pub extern "C" fn uvie_engine_trailing_gap(engine: *const UvieEngine) -> usize {
+    std::panic::catch_unwind(|| {
+        let Some(e) = lock_engine_const(engine) else {
+            return 0;
+        };
+        e.trailing_gap()
+    })
+    .unwrap_or(0)
+}
+
+/// Caret offset (`caret_back`, screen chars from the end of the newest
+/// committed word) the host must adopt after the last successful edit.
+/// Negative means the caret is right of the new newest word's end.
+#[unsafe(no_mangle)]
+pub extern "C" fn uvie_engine_last_caret_back(engine: *const UvieEngine) -> isize {
+    std::panic::catch_unwind(|| {
+        let Some(e) = lock_engine_const(engine) else {
+            return 0;
+        };
+        e.last_caret_back_after_edit()
+    })
+    .unwrap_or(0)
+}
+
 /// Reset all engine state (composing + committed + diff tracking).
 #[unsafe(no_mangle)]
 pub extern "C" fn uvie_engine_reset(engine: *mut UvieEngine) {

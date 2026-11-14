@@ -83,11 +83,21 @@ impl Screen {
         self.text = format!("{head} {tail}");
         self.caret += 1;
         self.anchor = self.caret - 1;
+        // The host posts the space natively and reports it as a separator, so
+        // the engine's caret geometry knows about it.
+        self.engine.note_separator();
     }
 
     /// Arrow-left: the caret steps back 1 char (the engine is not involved).
     fn arrow_left(&mut self) {
         self.caret = self.caret.saturating_sub(1);
+    }
+
+    /// Arrow-right: the caret steps forward 1 char.
+    fn arrow_right(&mut self) {
+        if self.caret < self.text.chars().count() {
+            self.caret += 1;
+        }
     }
 
     /// The caret's distance back to the anchor (what the host passes to
@@ -116,8 +126,8 @@ impl Screen {
         let (bs, fwd_del, out) = self.engine.edit_at_caret_diff(caret_back, ch)?;
         let out = out.to_string();
         self.apply_edit(bs, fwd_del, &out);
-        // The anchor moves to the edited word's end, which is where the
-        // caret now sits (the engine is composing it).
+        // The caret lands at the edited word's end (the engine stays idle and
+        // reports the same offset); re-root the anchor there.
         self.anchor = self.caret;
         Some(self.text.clone())
     }
@@ -273,10 +283,9 @@ fn edit_off_boundary_caret_declines() {
 }
 
 #[test]
-fn edit_older_word_drops_newer_from_history() {
-    // "ab cd ef " — edit "cd"; afterwards "eg" is no longer in the ring
-    // (its anchor geometry is stale), so it cannot be edited again, while
-    // the older "ab" remains editable.
+fn edit_older_word_keeps_newer_entries() {
+    // "ab cd eg " — edit "cd"; the newer "eg" and the older "ab" both stay in
+    // the ring and remain editable at their own boundaries.
     let mut s = Screen::new(true);
     s.commit_word("ab");
     s.commit_word("cd");
@@ -284,23 +293,28 @@ fn edit_older_word_drops_newer_from_history() {
     for _ in 0..("eg".chars().count() + 1 + 1) {
         s.arrow_left(); // onto cd's end
     }
-    let _ = s.edit_at(s.caret_back(), 's').expect("edit handled");
-    assert!(s.text.contains("cds"), "cd edited, got {:?}", s.text);
+    let edited = s.edit_at(s.caret_back(), 's').expect("edit handled");
+    assert!(edited.contains("cds"), "cd edited, got {edited:?}");
 
-    // Commit the edited word: the ring now holds [ab, cds]; "eg" was dropped
-    // (its anchor geometry is stale once "cd" is re-entered).
-    s.commit_composing();
+    // The newer word is still the newest entry: 3 rendered chars right of
+    // "cds"'s end is its own end (caret_back 0).
+    for _ in 0.."cds".chars().count() {
+        s.arrow_right();
+    }
+    assert_eq!(s.caret_back(), 0);
+    let edited = s.edit('s').expect("newer word still editable");
+    assert!(edited.contains("egs"), "got {edited:?}");
 
-    // The surviving older word is still editable at its own boundary:
-    // len("cds") + 1 boundary char behind the anchor (the post-commit caret
-    // starts 1 right of it, hence the extra step).
-    for _ in 0..("cds".chars().count() + 1 + 1) {
+    // The older word is still editable too: its end is "egs" (3) + its gap
+    // (1) + "cds" (3) + its gap (1) behind the anchor.
+    let back = "egs".chars().count() + 1 + "cds".chars().count() + 1;
+    for _ in 0..back {
         s.arrow_left();
     }
-    assert_eq!(s.caret_back(), "cds".chars().count() + 1);
+    assert_eq!(s.caret_back(), back);
     let edited = s
         .edit_at(s.caret_back(), 'x')
-        .expect("older word still editable after truncation");
+        .expect("older word still editable");
     assert!(edited.contains("abx"), "got {edited:?}");
 }
 
@@ -324,20 +338,26 @@ fn reset_clears_edit_history() {
 }
 
 #[test]
-fn backspace_after_edit_restores_composing_state() {
+fn backspace_after_edit_undoes_the_edit() {
     let mut s = Screen::new(true);
     s.commit_word("don");
     s.arrow_left();
     let _ = s.edit('s').expect("edit handled");
-    // The engine is now composing the edited word; backspace must walk it
-    // back through the snapshot stack like normal composing.
-    let (bs, out) = s.engine.backspace_diff();
+    assert_eq!(s.text, "dón ");
+    // The engine stays idle after an edit (the entry was updated in place),
+    // so a backspace at the caret — the edited word's end — undoes the last
+    // keystroke and restores the pre-edit word.
+    assert!(!s.engine.is_composing_diff());
+    assert_eq!(s.caret_back(), 0);
+    let (bs, out) = s
+        .engine
+        .backspace_at_caret_diff(s.caret_back())
+        .expect("backspace at the word end must re-open the word");
     let out = out.to_string();
     s.apply(bs, &out);
-    assert!(
-        s.text.starts_with("don"),
-        "backspace after edit must restore the pre-edit word, got {:?}",
-        s.text
+    assert_eq!(
+        s.text, "don ",
+        "backspace after edit must restore the pre-edit word"
     );
 }
 

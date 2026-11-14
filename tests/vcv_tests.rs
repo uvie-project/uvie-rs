@@ -80,10 +80,13 @@ mod vcv_tests {
         type_diff(&mut e, "neebo");
         assert_eq!(e.committed_text_diff(), "nê");
 
-        // Type space (word boundary)
-        let (_bs, suffix) = e.feed_diff(' ');
+        // Type space (word boundary): the commit runs the word-boundary
+        // restore rules (a V-C-V token is restored to its literal keystrokes)
+        // and the char itself is passed through.
+        let (bs, suffix) = e.feed_diff(' ');
         let suffix = suffix.to_string(); // Drop borrow
-        assert_eq!(suffix, " ");
+        assert_eq!(bs, 3, "the restored word rewrites the V-C-V render");
+        assert_eq!(suffix, "eebo ");
         assert_eq!(e.committed_text_diff(), ""); // Cleared on word boundary
     }
 

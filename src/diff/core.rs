@@ -12,61 +12,11 @@ use crate::engine::UltraFastViEngine;
 
 impl UltraFastViEngine {
     pub(crate) fn feed_diff_core(&mut self, ch: char) -> (usize, &str) {
-        // Word boundary: commit composing word, clear state, return char directly.
-        if Self::is_word_boundary(ch) {
-            // English dictionary override: if the full word matches a known
-            // English word, replace the Vietnamese transform with the raw
-            // English word + the boundary char.
-            if self.enable_english_override
-                && !self.diff.word_raw.is_empty()
-                && crate::tables::is_english_override(&self.diff.word_raw)
-            {
-                // Build full on-screen text (Vietnamese) in a stack buffer.
-                let mut full_screen = crate::buffers::new_out_buffer();
-                let _ = full_screen.push_str(&self.diff.diff_committed);
-                let _ = full_screen.push_str(&self.diff.prev_rendered);
-
-                // Build target: raw English word (preserve case) + boundary char.
-                let mut target = crate::buffers::new_out_buffer();
-                for &c in self.diff.word_raw.iter() {
-                    let _ = target.push(c);
-                }
-                let _ = target.push(ch);
-
-                // Record the committed word for post-commit editing: on
-                // screen it is the raw English word.
-                let entry_raw = self.diff.word_raw.clone();
-                let entry_rendered = target.clone();
-                self.diff.push_committed(entry_raw, entry_rendered);
-
-                // Clear all state.
-                self.buf.clear();
-                self.raw_len = 0;
-                self.pending_tone = None;
-                self.out_buf.clear();
-                self.diff.clear();
-
-                // Diff from full_screen → target.
-                let (bs, _) = Self::diff_into(&full_screen, &target, &mut self.diff.diff_suffix);
-                return (bs, &self.diff.diff_suffix);
-            }
-
-            // Record the committed word for post-commit editing: raw
-            // keystrokes + the exact text on screen.
-            let entry_raw = self.diff.word_raw.clone();
-            let mut entry_rendered = crate::buffers::new_out_buffer();
-            let _ = entry_rendered.push_str(&self.diff.diff_committed);
-            let _ = entry_rendered.push_str(&self.diff.prev_rendered);
-            self.diff.push_committed(entry_raw, entry_rendered);
-
-            self.buf.clear();
-            self.raw_len = 0;
-            self.pending_tone = None;
-            self.out_buf.clear();
-            self.diff.clear();
-            let _ = self.diff.diff_suffix.push(ch);
-            return (0, &self.diff.diff_suffix);
-        }
+        // Word boundaries are handled by the `feed_diff` wrapper, which routes
+        // them through `commit_diff` (dictionary / restore-raw / context rules)
+        // and records the separator for the caret geometry. The composing log
+        // replayed by `rebuild_composing` never contains one.
+        debug_assert!(!Self::is_word_boundary(ch));
 
         // Safety valve: buffer full - commit, start fresh.
         if self.diff.raw_chars.is_full() {

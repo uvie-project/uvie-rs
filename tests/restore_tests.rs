@@ -64,6 +64,8 @@ impl Host {
             self.text = format!("{head} {tail}");
             self.caret += 1;
             self.anchor = self.caret - 1;
+            // The space is posted natively: report it for the caret geometry.
+            self.engine.note_separator();
         }
         self.text.clone()
     }

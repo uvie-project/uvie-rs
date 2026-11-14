@@ -99,6 +99,36 @@ impl EngineSession {
             .map(|(bs, fwd, s)| (bs, fwd, s.to_owned()))
     }
 
+    /// Backspace with the caret on a committed word's end: undo that word's
+    /// last raw keystroke. Returns `(backspaces, new_suffix)` to apply at the
+    /// caret when handled.
+    pub fn backspace_at(&mut self, caret_back: usize) -> Option<(usize, String)> {
+        self.engine
+            .backspace_at_caret_diff(caret_back)
+            .map(|(bs, s)| (bs, s.to_owned()))
+    }
+
+    /// Caret offset the dispatcher must adopt after the last successful edit.
+    pub fn last_caret_back_after_edit(&self) -> isize {
+        self.engine.last_caret_back_after_edit()
+    }
+
+    /// A separator char (space / punctuation / Enter) was typed right after
+    /// the newest committed word.
+    pub fn note_separator(&mut self) {
+        self.engine.note_separator();
+    }
+
+    /// A separator char right after the newest committed word was deleted.
+    pub fn remove_separator(&mut self) -> bool {
+        self.engine.remove_separator()
+    }
+
+    /// Separator chars currently on screen right after the newest word.
+    pub fn trailing_gap(&self) -> usize {
+        self.engine.trailing_gap()
+    }
+
     /// Drop all composing + committed state (app switch, caret jump, reset).
     /// Must use the diff-aware reset: the plain core `clear()` leaves the
     /// committed-word ring intact, so a later keystroke could still "edit"

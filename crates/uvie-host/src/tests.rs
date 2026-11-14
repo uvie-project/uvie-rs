@@ -55,6 +55,84 @@ fn type_text(d: &mut Dispatcher, text: &str) {
     }
 }
 
+/// Apply a plan to a screen buffer at `caret`.
+fn apply_at(screen: &mut Vec<char>, caret: &mut usize, plan: &[InputAction]) {
+    for action in plan {
+        match action {
+            InputAction::Backspace(n) => {
+                for _ in 0..*n {
+                    if *caret > 0 {
+                        *caret -= 1;
+                        screen.remove(*caret);
+                    }
+                }
+            }
+            InputAction::ForwardDelete(n) => {
+                for _ in 0..*n {
+                    if *caret < screen.len() {
+                        screen.remove(*caret);
+                    }
+                }
+            }
+            InputAction::Text(t) => {
+                for ch in t.chars() {
+                    screen.insert(*caret, ch);
+                    *caret += 1;
+                }
+            }
+        }
+    }
+}
+
+/// Replay a caret-aware script like a real event source: `<` Backspace,
+/// `{` Left, `}` Right, any other char a printable key. Returns the final
+/// screen text with `|` marking the caret.
+fn replay_script(d: &mut Dispatcher, script: &str) -> String {
+    let mut screen: Vec<char> = Vec::new();
+    let mut caret = 0usize;
+    for ch in script.chars() {
+        let key = match ch {
+            '<' => KeyEvent::backspace(),
+            '{' => KeyEvent::left(),
+            '}' => KeyEvent::right(),
+            c => KeyEvent::char(c),
+        };
+        match d.handle(key, &Context::default()) {
+            Dispatch::Consume(plan) => apply_at(&mut screen, &mut caret, &plan),
+            Dispatch::Pass(plan) => {
+                apply_at(&mut screen, &mut caret, &plan);
+                match ch {
+                    '<' => {
+                        if caret > 0 {
+                            caret -= 1;
+                            screen.remove(caret);
+                        }
+                    }
+                    '{' => caret = caret.saturating_sub(1),
+                    '}' => {
+                        if caret < screen.len() {
+                            caret += 1;
+                        }
+                    }
+                    c => {
+                        screen.insert(caret, c);
+                        caret += 1;
+                    }
+                }
+            }
+        }
+    }
+    let mut out: String = screen.into_iter().collect();
+    out.insert(
+        out.char_indices()
+            .nth(caret)
+            .map(|x| x.0)
+            .unwrap_or(out.len()),
+        '|',
+    );
+    out
+}
+
 fn expect_consume(d: Dispatch) -> Vec<InputAction> {
     match d {
         Dispatch::Consume(plan) => plan,
@@ -413,6 +491,8 @@ fn forward_delete_deleting_space_arms_edit() {
     let mut d = dispatcher();
     type_text(&mut d, "don");
     expect_pass(d.handle(KeyEvent::char(' '), &Context::default()));
+    // Step back onto the word end, then Forward Delete removes the space.
+    expect_pass(d.handle(KeyEvent::left(), &Context::default()));
     expect_pass(d.handle(KeyEvent::forward_delete(), &Context::default()));
     assert_eq!(d.caret_back(), 0);
     let plan = expect_consume(d.handle(KeyEvent::char('s'), &Context::default()));
@@ -829,6 +909,96 @@ fn edit_disabled_still_drops_stale_anchor() {
     let plan = expect_consume(d.handle(KeyEvent::char('s'), &Context::default()));
     assert_eq!(plan, vec![text("s")]);
     assert_eq!(d.caret_back(), 0);
+}
+
+// MARK: - Caret-aware post-commit editing (LabanKey-style)
+
+#[test]
+fn edit_after_punctuation_and_space() {
+    // Punctuation commits must keep the committed-word history: the caret
+    // sits at the end of the word with ". " to its right.
+    assert_eq!(
+        replay_script(&mut dispatcher(), "ddi hoc. {{j"),
+        "đi học|. "
+    );
+    assert_eq!(replay_script(&mut dispatcher(), "vieet. {{j"), "việt|. ");
+}
+
+#[test]
+fn edit_after_double_space() {
+    // A second Space only grows the trailing gap; the caret is still measured
+    // from the word's end.
+    assert_eq!(replay_script(&mut dispatcher(), "tieng  {{j"), "tiệng|  ");
+}
+
+#[test]
+fn edit_older_word_keeps_newer_words_editable() {
+    // Edit "viêt" (the older word), then move back to "nam"'s end: 'j' must
+    // still re-render "nam" in place.
+    assert_eq!(
+        replay_script(&mut dispatcher(), "vieet nam {{{{{j}}}}}{j"),
+        "việt nạm| "
+    );
+}
+
+#[test]
+fn backspace_reopens_a_committed_word() {
+    // The first Backspace deletes the separator, the second re-opens the word
+    // and undoes its last keystroke.
+    assert_eq!(replay_script(&mut dispatcher(), "vieet <<tj"), "việt|");
+    // A word being edited in place is an intermediate state: only the
+    // dictionary applies, the restore-raw rule judges finished words.
+    assert_eq!(replay_script(&mut dispatcher(), "vieet <<j"), "việ|");
+    // ... and retyping the popped key restores the word.
+    assert_eq!(replay_script(&mut dispatcher(), "hoc <<c"), "hoc|");
+}
+
+#[test]
+fn edit_word_end_after_caret_moves() {
+    assert_eq!(replay_script(&mut dispatcher(), "vieet {j"), "việt| ");
+    assert_eq!(replay_script(&mut dispatcher(), "vieet{j"), "việt|");
+    assert_eq!(replay_script(&mut dispatcher(), "vieet <j"), "việt|");
+    // Two edits in a row: a second 'j' would cancel the tone and leave a
+    // literal 'j', so the second key is 's'.
+    assert_eq!(replay_script(&mut dispatcher(), "vieet {js"), "viết| ");
+}
+
+#[test]
+fn edit_older_words_in_a_long_sentence() {
+    assert_eq!(
+        replay_script(&mut dispatcher(), "chao ban {{{{{f"),
+        "chào| ban "
+    );
+    assert_eq!(
+        replay_script(&mut dispatcher(), "ban, toi {{{{{{f"),
+        "bàn|, toi "
+    );
+}
+
+#[test]
+fn edit_three_words_in_arbitrary_order() {
+    // "mot hai ba bon " — tone the middle word, then the oldest, then the
+    // newest; every edit leaves the rest of the sentence alone.
+    assert_eq!(
+        replay_script(
+            &mut dispatcher(),
+            "mot hai ba bon {{{{{j{{{{{{{s}}}}}}}}}}}f"
+        ),
+        "mót hai bạ bòn| "
+    );
+}
+
+#[test]
+fn backspace_deleting_the_separator_tracks_the_gap() {
+    let mut d = dispatcher();
+    type_text(&mut d, "don ");
+    assert_eq!(d.caret_back(), -1);
+    // Deleting the space leaves the caret at the word's end.
+    expect_pass(d.handle(KeyEvent::backspace(), &Context::default()));
+    assert_eq!(d.caret_back(), 0);
+    // The word is still editable there.
+    let plan = expect_consume(d.handle(KeyEvent::char('s'), &Context::default()));
+    assert_eq!(plan, vec![InputAction::Backspace(2), text("ón")]);
 }
 
 // MARK: - Macros / memory persistence
