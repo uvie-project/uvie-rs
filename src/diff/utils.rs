@@ -5,6 +5,7 @@ use crate::buffers::{CharVec, OutBuffer};
 use crate::diff::Diffable;
 use crate::engine::UltraFastViEngine;
 use crate::modes::{IS_TONE_KEY, InputMethod, Mode};
+use crate::validation::SyllableValidator;
 
 impl UltraFastViEngine {
     /// Compute minimal diff from `prev` → `new`, writing suffix into `out`.
@@ -344,6 +345,21 @@ impl UltraFastViEngine {
         !Self::rerender_chars(&tail, mode, is_simple_telex).is_ascii()
     }
 
+    /// A scratch engine that replays keystrokes exactly like the live one
+    /// (same input method, orthography and shorthand options), but with the
+    /// English dictionary override disabled - so a dictionary word typed into
+    /// it renders as the Vietnamese transform instead of committing raw.
+    fn scratch_word_engine(&self) -> UltraFastViEngine {
+        let mut scratch = UltraFastViEngine::new();
+        scratch.set_input_method(self.input_method());
+        scratch.set_modern_orthography(self.modern_orthography());
+        scratch.set_quick_start(self.quick_start());
+        scratch.set_quick_telex(self.quick_telex());
+        scratch.set_relaxed_coda(self.relaxed_coda());
+        scratch.set_english_override(false);
+        scratch
+    }
+
     /// True when the word re-rendered as pure Vietnamese (no dictionary
     /// override) stays plain letters — no Vietnamese diacritics. An English
     /// word that would come out as "rétlesnes" is never what the user meant,
@@ -352,17 +368,68 @@ impl UltraFastViEngine {
     /// Runs a scratch replay of the word with the override disabled: only
     /// reached while a cancel fallback is armed, never on the normal path.
     pub(crate) fn word_renders_plain(&self, word_raw: &[char]) -> bool {
-        let mut scratch = UltraFastViEngine::new();
-        scratch.set_input_method(self.input_method());
-        scratch.set_modern_orthography(self.modern_orthography());
-        scratch.set_quick_start(self.quick_start());
-        scratch.set_quick_telex(self.quick_telex());
-        scratch.set_relaxed_coda(self.relaxed_coda());
-        scratch.set_english_override(false);
+        let mut scratch = self.scratch_word_engine();
         for &c in word_raw {
             let _ = scratch.feed_diff(c);
         }
         scratch.current_output_diff().is_ascii()
+    }
+
+    /// True when the sticky English word can be re-opened as Vietnamese: the
+    /// extended word is no longer dictionary material, and rendered from
+    /// scratch (override off) it is ONE complete Vietnamese syllable.
+    ///
+    /// The dictionary fires per keystroke, so a dictionary word that is a
+    /// prefix of a common Vietnamese keystroke sequence pins the rest of the
+    /// word to raw ("soon" + "g" → "soong" instead of "sông"). Once the
+    /// extended word can no longer become an English word, the raw
+    /// passthrough is no longer what the user meant.
+    ///
+    /// Runs a scratch replay of the word with the override disabled: only
+    /// reached while `english_sticky` is set, never on the normal path.
+    pub(crate) fn word_reopens_as_vietnamese(&self) -> bool {
+        // The raw keystrokes no longer describe the whole word (its prefix
+        // was committed mid-word) - re-opening the tail would rewrite text
+        // the raw does not cover.
+        if self.diff.word_raw_overflowed {
+            return false;
+        }
+        // Still English-dict material: the word may yet become an English
+        // word ("soone" → "sooner"), so keep the raw passthrough.
+        if crate::tables::is_english_override(&self.diff.word_raw)
+            || crate::tables::is_english_prefix(&self.diff.word_raw)
+        {
+            return false;
+        }
+        // Only a word the dictionary actually hijacked re-opens: a proper
+        // prefix of it must still be a dictionary word. Once the user has
+        // backspaced below that word ("mass" ⌫ → "mas"), the tail is not a
+        // dictionary continuation but a deliberately deleted word - restoring
+        // it would resurrect text the user has already removed.
+        let n = self.diff.word_raw.len();
+        if !(4..n).any(|len| crate::tables::is_english_override(&self.diff.word_raw[..len])) {
+            return false;
+        }
+        let mut scratch = self.scratch_word_engine();
+        for &c in self.diff.word_raw.iter() {
+            let _ = scratch.feed_diff(c);
+        }
+        // A V-C-V split inside the token glued several syllables together,
+        // which a single Vietnamese word never is.
+        if !scratch.committed_text_diff().is_empty() {
+            return false;
+        }
+        let render = scratch.current_output_diff();
+        // No Vietnamese transform at all - nothing to re-open.
+        if render.is_ascii() {
+            return false;
+        }
+        // The render must be a complete Vietnamese syllable, not the marks
+        // the pipeline applied to an English word ("law" → "lă").
+        if crate::restore::rendered_syllable_needs_restore(&render) {
+            return false;
+        }
+        scratch.is_valid_vietnamese()
     }
 
     /// Pop the last raw keystroke of the current word.

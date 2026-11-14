@@ -112,6 +112,16 @@ impl Diffable for UltraFastViEngine {
                     return self.fallback_to_vietnamese();
                 }
             }
+            // General re-open: the extended word is no longer dictionary
+            // material and renders as ONE complete Vietnamese syllable, so
+            // the raw passthrough is not what the user meant - the dictionary
+            // word was only a prefix of the Vietnamese keystroke sequence
+            // ("soon"+"g" → "sông", "meet"+"j" → "mệt"). A word whose
+            // doubled tone key armed a fallback keeps the fallback path's
+            // verdict (it returned above when the tail read as Vietnamese).
+            if self.diff.english_fallback.is_none() && self.word_reopens_as_vietnamese() {
+                return self.reopen_as_vietnamese();
+            }
             let _ = self.diff.prev_rendered.push(ch);
             self.diff.diff_suffix.clear();
             let _ = self.diff.diff_suffix.push(ch);

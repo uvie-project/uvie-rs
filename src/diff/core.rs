@@ -360,6 +360,57 @@ impl UltraFastViEngine {
         (bs, &self.diff.diff_suffix)
     }
 
+    /// Re-open a sticky English word as Vietnamese.
+    ///
+    /// The dictionary override fires per keystroke, so a dictionary word that
+    /// is a prefix of a common Vietnamese keystroke sequence pins the rest of
+    /// the word to raw ("soon" + "g" → "soong" instead of "sông"). Once the
+    /// extended word can no longer become an English word and renders as one
+    /// complete Vietnamese syllable (`word_reopens_as_vietnamese`), the whole
+    /// word is replayed through the live pipeline with the override disabled
+    /// and the on-screen raw text is diffed to the new render.
+    ///
+    /// After the replay the word is a normal composing word: later keys,
+    /// backspace, the dictionary check on longer words and `commit_diff` all
+    /// behave as if it had been typed fresh.
+    pub(crate) fn reopen_as_vietnamese(&mut self) -> (usize, &str) {
+        // Text currently on screen: the raw English prefix + sticky tail.
+        let mut screen_before = new_out_buffer();
+        let _ = screen_before.push_str(&self.diff.diff_committed);
+        let _ = screen_before.push_str(&self.diff.prev_rendered);
+
+        // The whole word's keystrokes (the dictionary prefix and every tail
+        // key typed after it - `word_raw` already holds the triggering key).
+        let word: CharVec<24> = self.diff.word_raw.iter().copied().collect();
+
+        // Clear composing/diff word state exactly like `reset_diff`, but keep
+        // the committed-word ring: older words are still on screen and stay
+        // editable.
+        let ring = ::core::mem::take(&mut self.diff.edit_history);
+        let ring_start = self.diff.edit_history_start;
+        let ring_len = self.diff.edit_history_len;
+        self.reset_diff();
+        self.diff.edit_history = ring;
+        self.diff.edit_history_start = ring_start;
+        self.diff.edit_history_len = ring_len;
+
+        // Replay the whole word with the override off: the dictionary prefix
+        // would otherwise fire again and re-pin the word to raw.
+        let prev_override = self.enable_english_override;
+        self.enable_english_override = false;
+        for &c in word.iter() {
+            let _ = self.feed_diff(c);
+        }
+        self.enable_english_override = prev_override;
+
+        // Diff the raw text that was on screen to the re-rendered word.
+        let mut full = new_out_buffer();
+        let _ = full.push_str(&self.diff.diff_committed);
+        let _ = full.push_str(&self.diff.prev_rendered);
+        let (bs, _) = Self::diff_into(&screen_before, &full, &mut self.diff.diff_suffix);
+        (bs, &self.diff.diff_suffix)
+    }
+
     /// Rebuild the composing portion of the engine from a lossless keystroke log.
     ///
     /// Resets the core engine and the diff *composing* state, then replays `log`
