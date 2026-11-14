@@ -71,12 +71,10 @@ mod word_boundary_punctuation_tests {
     fn at_sign_boundary() {
         let mut e = UltraFastViEngine::new();
         e.set_modern_orthography(true);
-        // `user` renders `uể` — 's' is the sắc tone on u, 'e' joins the
-        // nucleus and [u,e]+'r' resolves to uê (the real Telex spelling).
-        // Then `@` boundary, then `hoas` → `hoá`. `user` stays excluded
-        // from the English dictionary: the render is a valid-looking
-        // Vietnamese word either way.
-        assert_eq!(type_diff(&mut e, "user@hoas"), "uể@hoá");
+        // `user` is a common English word (top 5k) whose Vietnamese render
+        // (`uể`) is a real word but needs a non-adjacent ê, so the English
+        // reading wins. Then `@` boundary, then `hoas` → `hoá`.
+        assert_eq!(type_diff(&mut e, "user@hoas"), "user@hoá");
     }
 
     #[test]

@@ -1,13 +1,21 @@
 //! English override dictionary generator.
 //!
 //! Rule (per AGENTS.md design): include an English word iff its Telex
-//! feed_diff render differs from the raw word AND the rendered text is NOT
-//! valid Vietnamese — where "valid" means the whole rendered token can be
-//! segmented into real Vietnamese syllables (from the 22k word list, tone
-//! marks stripped). This covers the two documented exclusions:
-//!   - transform is a real Vietnamese word        ("chaos"→"cháo")
-//!   - V-C-V components both valid Vietnamese     ("user"→"u"+"sẻ")
-use std::collections::{HashMap, HashSet};
+//! feed_diff render differs from the raw word AND the rendered text is NOT a
+//! real Vietnamese word on its own (from the 22k word list, tones kept).
+//!
+//! A Vietnamese token typed without spaces is a single syllable, so a render
+//! that merely *decomposes* into several real words at consonant onsets
+//! ("after" → "à"+"tẻ", "master" → "má"+"tẻ") is not Vietnamese intent —
+//! that multi-word exclusion is gone.
+//!
+//! One exception re-includes a render that is a single real word: a common
+//! English word (top ~20k of the frequency corpus) whose Vietnamese reading
+//! needs a NON-adjacent doubled letter ("reets", "theem", "ddefend") while
+//! the English spelling does not contain that adjacent pair ("reset",
+//! "theme", "defend"). Vietnamese typists type the canonical doubled form,
+//! so the English reading must win for those.
+use std::collections::HashSet;
 use uvie::UltraFastViEngine;
 use uvie::diff::Diffable;
 
@@ -26,7 +34,6 @@ fn type_word(engine: &mut UltraFastViEngine, input: &str) -> String {
 }
 
 /// Strip Vietnamese tone marks but keep vowel-quality marks (ă â ê ô ơ ư đ).
-#[allow(dead_code)]
 fn strip_tones(c: char) -> char {
     match c {
         'á' | 'à' | 'ả' | 'ã' | 'ạ' => 'a',
@@ -57,35 +64,23 @@ fn strip_tones(c: char) -> char {
     }
 }
 
-/// Vietnamese onset consonant letters (first letter of every onset,
-/// including digraphs ch gh gi kh ng ngh nh ph qu th tr).
-fn is_vi_consonant(c: char) -> bool {
-    matches!(
-        c,
-        'b' | 'c'
-            | 'd'
-            | 'đ'
-            | 'g'
-            | 'h'
-            | 'k'
-            | 'l'
-            | 'm'
-            | 'n'
-            | 'p'
-            | 'q'
-            | 'r'
-            | 's'
-            | 't'
-            | 'v'
-            | 'x'
-    )
+/// Does the render need a doubled letter the raw English word does not
+/// contain adjacently? The Telex spellings are "aa" (â), "ee" (ê), "oo"
+/// (ô) and "dd" (đ); a word that never doubles the letter can only reach
+/// the render through the non-canonical order ("e…s…e"), so the English
+/// reading wins.
+fn needs_nonadjacent_double(word: &str, render: &str) -> bool {
+    let base: String = render.chars().map(strip_tones).collect();
+    [('â', "aa"), ('ê', "ee"), ('ô', "oo")]
+        .iter()
+        .any(|&(v, pair)| base.contains(v) && !word.contains(pair))
+        || (base.contains('đ') && !word.contains("dd"))
 }
 
 fn main() {
     // Set of real Vietnamese WORDS (tones kept) — every whitespace-separated
-    // token of the 22k list. The exclusion check is tone-aware: a rendered
-    // token only counts as valid Vietnamese if it decomposes into real
-    // words, not merely real syllable *shapes*.
+    // token of the 22k list. A Vietnamese token typed without spaces is one
+    // syllable, so only a whole-token match counts as Vietnamese intent.
     let vi_data = include_str!("../tests/data/vietnamese_22k.txt");
     let mut words: HashSet<String> = HashSet::new();
     for line in vi_data.lines() {
@@ -97,36 +92,6 @@ fn main() {
         }
     }
     println!("word set: {}", words.len());
-
-    // DP: can `s` (the rendered text, tones kept, lowercase) be decomposed
-    // into real Vietnamese words where every cut lands on a consonant
-    // onset — the same boundary the engine's V-C-V split produces? That is
-    // the documented exclusion: the render itself is a real word, or its
-    // split components are all real words ("u"+"sẻ").
-    fn valid_vi(s: &str, words: &HashSet<String>, memo: &mut HashMap<String, bool>) -> bool {
-        if s.is_empty() {
-            return true;
-        }
-        if words.contains(s) {
-            return true;
-        }
-        if let Some(&v) = memo.get(s) {
-            return v;
-        }
-        let mut ok = false;
-        for (i, _) in s.char_indices().skip(1) {
-            let (pre, post) = s.split_at(i);
-            let Some(first) = post.chars().next() else {
-                continue;
-            };
-            if words.contains(pre) && is_vi_consonant(first) && valid_vi(post, words, memo) {
-                ok = true;
-                break;
-            }
-        }
-        memo.insert(s.to_string(), ok);
-        ok
-    }
 
     let en_data = include_str!("../tests/data/english_100k.txt");
 
@@ -148,6 +113,7 @@ fn main() {
     // Stricter gate for the doubled-tone-key class: below top ~10k the
     // cancel mechanics win over the English word.
     let top10k: HashSet<&str> = en_data.lines().take(10_000).map(|l| l.trim()).collect();
+    let top5k: HashSet<&str> = en_data.lines().take(5_000).map(|l| l.trim()).collect();
     let shadows_pair = |w: &str| -> bool {
         // First pair input >= w; if it starts with w, w is a prefix.
         let idx = pair_inputs.partition_point(|p| *p < w);
@@ -168,6 +134,7 @@ fn main() {
     let mut dict: Vec<String> = Vec::new();
     let mut n_passthrough = 0;
     let mut n_valid_vi = 0;
+    let mut n_reincluded = 0;
     let mut n_shadowed = 0;
     let mut n_doubled = 0;
     for line in en_data.lines() {
@@ -184,10 +151,15 @@ fn main() {
             continue;
         }
         let lw_render: String = rendered.chars().map(|c| c.to_ascii_lowercase()).collect();
-        let mut memo = HashMap::new();
-        if valid_vi(&lw_render, &words, &mut memo) {
-            n_valid_vi += 1;
-            continue;
+        if words.contains(&lw_render) {
+            // The render is a real Vietnamese word: Vietnamese intent wins,
+            // unless common English only reaches it through a non-canonical
+            // keystroke order.
+            if !(top20k.contains(word) && needs_nonadjacent_double(word, &lw_render)) {
+                n_valid_vi += 1;
+                continue;
+            }
+            n_reincluded += 1;
         }
         if shadows_pair(word) && !top20k.contains(word) {
             n_shadowed += 1;
@@ -201,35 +173,55 @@ fn main() {
     }
     dict.sort();
     dict.dedup();
-    println!(
-        "passthrough: {}, valid-vi(excluded): {}, shadowed: {}, doubled-tone: {}, dict: {}",
-        n_passthrough,
-        n_valid_vi,
-        n_shadowed,
-        n_doubled,
-        dict.len()
-    );
-    use std::io::Write;
-    let mut f = std::fs::File::create("/tmp/new_dict.txt").unwrap();
-    for w in &dict {
-        writeln!(f, "    \"{}\",", w).unwrap();
-    }
-    // Show which current dict words are NOT in new list (regressions to check)
+
+    // Words currently shipped in src/tables/english.rs — the new list is a
+    // union with them so no already-protected word is lost.
     let cur: HashSet<String> = include_str!("../src/tables/english.rs")
         .lines()
+        .filter(|l| l.starts_with("    \""))
         .filter_map(|l| {
             l.trim()
                 .trim_end_matches(',')
                 .strip_prefix('"')
                 .and_then(|s| s.strip_suffix('"'))
         })
-        .map(|s| s.trim_end_matches(',').to_string())
+        .map(|s| s.to_string())
         .collect();
+    println!(
+        "passthrough: {}, valid-vi(excluded): {}, re-included: {}, shadowed: {}, doubled-tone: {}, new list: {}, current: {}",
+        n_passthrough,
+        n_valid_vi,
+        n_reincluded,
+        n_shadowed,
+        n_doubled,
+        dict.len(),
+        cur.len()
+    );
+
     let new: HashSet<String> = dict.iter().cloned().collect();
-    let missing: Vec<_> = cur.difference(&new).collect();
-    println!("current-dict words absent from new dict: {}", missing.len());
-    let mut f2 = std::fs::File::create("/tmp/missing_from_new.txt").unwrap();
-    for w in &missing {
-        writeln!(f2, "{}", w).unwrap();
+    let mut merged: Vec<String> = cur.union(&new).cloned().collect();
+    merged.sort();
+    merged.dedup();
+    println!("merged dict: {}", merged.len());
+
+    let mut added: Vec<&String> = new.difference(&cur).collect();
+    added.sort();
+    println!("newly added: {}", added.len());
+    let mut added_top5k: Vec<&str> = added
+        .iter()
+        .map(|w| w.as_str())
+        .filter(|w| top5k.contains(w))
+        .collect();
+    added_top5k.sort();
+    println!("newly added in top 5k: {:?}", added_top5k);
+
+    let path = std::env::args().nth(1).unwrap_or_else(|| {
+        "/private/tmp/claude-501/-Users-thupham-Documents-Workspace/96c58022-f10a-4dec-b879-dca7136e0a85/scratchpad/new_dict.txt".to_string()
+    });
+    use std::io::Write;
+    let mut f = std::fs::File::create(&path).unwrap();
+    for w in &merged {
+        writeln!(f, "    \"{}\",", w).unwrap();
     }
+    println!("wrote {} words to {}", merged.len(), path);
 }

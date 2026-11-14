@@ -188,18 +188,18 @@ fn real_type_most_still_vietnamese() {
 }
 
 #[test]
-fn real_type_user_still_vietnamese() {
+fn real_type_user_is_english() {
     let mut e = UltraFastViEngine::new();
     let mut s = String::new();
     type_chars(&mut e, &mut s, "user");
     // "user" → "uể": 's' is the sắc tone on u, 'e' joins the nucleus and
-    // [u,e]+'r' resolves to uê (the real Telex spelling of "uể").
-    // Before the centering-diphthong resolution this produced the V-C-V
-    // split "usẻ" ("u" + "sẻ"); both forms stay out of the English dict
-    // because the render is a valid-looking Vietnamese word either way.
-    assert_eq!(s, "uể", "user should produce uể (u + sắc + ê + huyền)");
+    // [u,e]+'r' resolves to uê (the real Telex spelling of "uể"). The
+    // render is a real Vietnamese word, but "user" is a common English
+    // word (top 5k) whose spelling never doubles the ê, so the dictionary
+    // override keeps the English reading.
+    assert_eq!(s, "user", "user should pass through as English");
     press_space(&mut e, &mut s);
-    assert_eq!(s, "uể ");
+    assert_eq!(s, "user ");
 }
 
 #[test]

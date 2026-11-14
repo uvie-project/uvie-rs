@@ -278,12 +278,12 @@ fn escape_restores_english_raw_while_composing() {
 
 #[test]
 fn escape_restores_whole_word_after_syllable_split() {
-    // "master" renders "mátẻ" - the split commits "má" and only "ter" stays
+    // "bister" renders "bítẻ" - the split commits "bí" and only "ter" stays
     // composing. Escape must restore the WHOLE word.
     let mut d = dispatcher();
-    type_text(&mut d, "master");
+    type_text(&mut d, "bister");
     let plan = expect_consume(d.handle(KeyEvent::escape(), &Context::default()));
-    assert_eq!(plan, vec![InputAction::Backspace(4), text("master")]);
+    assert_eq!(plan, vec![InputAction::Backspace(4), text("bister")]);
     assert!(!d.session.is_composing());
 }
 
