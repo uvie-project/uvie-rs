@@ -147,8 +147,17 @@ mod tests {
     #[test]
     fn restores_non_vietnamese_renders() {
         for s in [
-            "lă", "să", "ươ", "dằ", // English + w/double-key renders
-            "àtẻ", "ưatẻ", "sẻvẻ", "lẩvel", "díplay", "mátẻ", "chẩcter",
+            "lă",
+            "să",
+            "ươ",
+            "dằ", // English + w/double-key renders
+            "àtẻ",
+            "ưatẻ",
+            "sẻvẻ",
+            "lẩvel",
+            "díplay",
+            "mátẻ",
+            "chẩcter",
         ] {
             assert!(needs(s), "{s:?} must be restored");
         }

@@ -208,6 +208,25 @@ impl DiffState {
         self.edit_history[idx].take()
     }
 
+    /// Borrow the newest committed word that has raw keystrokes, skipping
+    /// empty entries (a boundary char pressed with nothing composing still
+    /// records an empty word).
+    ///
+    /// Read by the sentence-context English rule at word commit: the
+    /// previous word must be on screen as plain English text.
+    pub fn newest_committed(&self) -> Option<&CommittedWord> {
+        for step in 0..self.edit_history_len {
+            let idx = (self.edit_history_start + self.edit_history_len - 1 - step)
+                % self.edit_history.len();
+            if let Some(w) = self.edit_history[idx].as_ref() {
+                if !w.raw.is_empty() {
+                    return Some(w);
+                }
+            }
+        }
+        None
+    }
+
     /// Push a snapshot of the current composing state.
     /// Called after each successful feed_diff_core.
     #[inline]

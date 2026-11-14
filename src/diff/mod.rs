@@ -396,6 +396,19 @@ impl Diffable for UltraFastViEngine {
             return self.commit_restoring_raw();
         }
 
+        // Sentence-context English rule: a common English word that renders
+        // as a valid Vietnamese syllable in isolation ("how" → "hơ",
+        // "best" → "bét") is restored when the previous committed word is
+        // clearly English ("Hello, how are you?"). Vietnamese context never
+        // qualifies, so Vietnamese typing is unaffected.
+        if self.enable_english_override
+            && !self.diff.word_raw.is_empty()
+            && !self.diff.word_raw_overflowed
+            && self.should_restore_context_english()
+        {
+            return self.commit_restoring_raw();
+        }
+
         // Capture the word for post-commit editing before the clears wipe
         // the buffers: raw keystrokes + the exact text on screen (V-C-V
         // committed prefix + composing render).
@@ -768,5 +781,65 @@ impl UltraFastViEngine {
             return true;
         }
         crate::restore::rendered_syllable_needs_restore(&self.diff.prev_rendered)
+    }
+
+    /// Sentence-context English rule: `true` when the finished token is a
+    /// common English word that the pipeline marked as Vietnamese AND the
+    /// previous committed word is clearly English ("Hello, how are you?" —
+    /// "how" → "hơ"). Restored words are recorded with rendered == raw, so
+    /// the context chains: the dictionary restores "soon", which lets the
+    /// second "as" in "as soon as possible" see an English previous word.
+    fn should_restore_context_english(&self) -> bool {
+        // Sticky English passthrough already shows the word raw.
+        if self.diff.english_sticky {
+            return false;
+        }
+        // Plain-ASCII screens (including intentional double-key cancels)
+        // need no restore.
+        let mut screen = crate::buffers::new_out_buffer();
+        let _ = screen.push_str(&self.diff.diff_committed);
+        let _ = screen.push_str(&self.diff.prev_rendered);
+        if screen.is_ascii() {
+            return false;
+        }
+        // The raw keystrokes must be a common English word.
+        if !crate::tables::is_english_ambiguous_word(&self.diff.word_raw) {
+            return false;
+        }
+        // The previous committed word must be on screen as typed, plain
+        // ASCII English: a Vietnamese word ("các", "trời") never qualifies.
+        let Some(prev) = self.diff.newest_committed() else {
+            return false;
+        };
+        if !prev
+            .rendered
+            .chars()
+            .all(|c| c.is_ascii_alphabetic() || c == '\'')
+        {
+            return false;
+        }
+        if prev.raw.len() != prev.rendered.chars().count()
+            || !prev
+                .raw
+                .iter()
+                .zip(prev.rendered.chars())
+                .all(|(&a, b)| a == b)
+        {
+            return false;
+        }
+        if crate::tables::is_english_context_word(&prev.rendered) {
+            return true;
+        }
+        // Longer English words ("soon", "more") come from the dictionary.
+        let mut chars = crate::buffers::CharVec::<24>::new();
+        for c in prev.rendered.chars() {
+            if !chars.try_push(c) {
+                return false;
+            }
+        }
+        // A word this rule (or the dictionary) already restored to raw keeps
+        // the chain going: "what is best" — "is" was restored, so "best" is too.
+        crate::tables::is_english_override(&chars)
+            || crate::tables::is_english_ambiguous_word(&chars)
     }
 }
