@@ -516,11 +516,11 @@ fn diff_type_screen_raw(input: &str) -> (String, String) {
 fn diff_word_raw_spans_the_whole_word() {
     // A host "escape restores the literal keystrokes" action needs the raw
     // keys of the ENTIRE word, not just the composing syllable: the V-C-V
-    // split commits "má" and leaves only "ter" composing, but the user
-    // typed "master".
-    let (screen, raw) = diff_type_screen_raw("master");
-    assert_eq!(screen, "mátẻ");
-    assert_eq!(raw, "master");
+    // split commits "bí" and leaves only "ter" composing, but the user
+    // typed "bister".
+    let (screen, raw) = diff_type_screen_raw("bister");
+    assert_eq!(screen, "bítẻ");
+    assert_eq!(raw, "bister");
 
     // Same across a dictionary commit: the override commits "mass" and
     // passes the tail through raw.

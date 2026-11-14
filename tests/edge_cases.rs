@@ -166,8 +166,8 @@ fn edge_english_dictionary_override() {
 
     // Words NOT in the dictionary should still transform.
     let mut e = UltraFastViEngine::new();
-    let r = type_diff(&mut e, "reset ");
-    assert_ne!(r, "reset ");
+    let r = type_diff(&mut e, "most ");
+    assert_ne!(r, "most ");
 }
 
 #[test]
