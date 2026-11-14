@@ -381,42 +381,19 @@ impl Diffable for UltraFastViEngine {
             && !self.diff.word_raw.is_empty()
             && crate::tables::is_english_override(&self.diff.word_raw)
         {
-            // Build full on-screen text (Vietnamese) in a stack buffer.
-            let mut full_screen = crate::buffers::new_out_buffer();
-            let _ = full_screen.push_str(&self.diff.diff_committed);
-            let _ = full_screen.push_str(&self.diff.prev_rendered);
+            return self.commit_restoring_raw();
+        }
 
-            // Build target text (raw English word, preserve case) in a stack buffer.
-            let mut target = crate::buffers::new_out_buffer();
-            for &c in self.diff.word_raw.iter() {
-                let _ = target.push(c);
-            }
-
-            // Capture the raw keystrokes BEFORE the clears wipe word_raw.
-            let entry_raw = self.diff.word_raw.clone();
-
-            // Clear all state.
-            self.buf.clear();
-            self.raw_len = 0;
-            self.pending_tone = None;
-            self.out_buf.clear();
-            self.committed.clear();
-            self.syl_structure.clear();
-            self.diff.clear();
-            for s in &mut self.diff.snapshots {
-                *s = None;
-            }
-            self.diff.snapshot_count = 0;
-
-            // Record the word for post-commit editing: on screen it is the
-            // raw English word (the override replaced the Vietnamese
-            // transform). Pushed AFTER the clears — DiffState::clear()
-            // wipes the ring.
-            self.diff.push_committed(entry_raw, target.clone());
-
-            // Diff from full_screen → target, writing suffix into diff_suffix.
-            let (bs, _) = Self::diff_into(&full_screen, &target, &mut self.diff.diff_suffix);
-            return (bs, &self.diff.diff_suffix);
+        // Restore-raw rule (LabanKey): a finished token that is not a valid
+        // Vietnamese word shows the literal keystrokes instead of the marks
+        // the pipeline applied to it ("law" → "lă", "after" → "àtẻ"). Same
+        // toggle as the dictionary — the host's "restore English" setting.
+        if self.enable_english_override
+            && !self.diff.word_raw.is_empty()
+            && !self.diff.word_raw_overflowed
+            && self.should_restore_raw_on_commit()
+        {
+            return self.commit_restoring_raw();
         }
 
         // Capture the word for post-commit editing before the clears wipe
@@ -707,5 +684,89 @@ impl Diffable for UltraFastViEngine {
 
     fn prev_rendered_debug(&self) -> &str {
         &self.diff.prev_rendered
+    }
+}
+
+impl UltraFastViEngine {
+    /// Commit the current word as its literal raw keystrokes: diff the
+    /// on-screen text (V-C-V committed prefix + composing render) to
+    /// `word_raw`, clear every bit of composing state, and record the word for
+    /// post-commit editing with rendered == raw (so an edit re-renders
+    /// raw + key from scratch). Shared by the English dictionary override and
+    /// the restore-raw rule.
+    fn commit_restoring_raw(&mut self) -> (usize, &str) {
+        // Build full on-screen text (Vietnamese) in a stack buffer.
+        let mut full_screen = crate::buffers::new_out_buffer();
+        let _ = full_screen.push_str(&self.diff.diff_committed);
+        let _ = full_screen.push_str(&self.diff.prev_rendered);
+
+        // Build target text (raw keystrokes, preserve case) in a stack buffer.
+        let mut target = crate::buffers::new_out_buffer();
+        for &c in self.diff.word_raw.iter() {
+            let _ = target.push(c);
+        }
+
+        // Capture the raw keystrokes BEFORE the clears wipe word_raw.
+        let entry_raw = self.diff.word_raw.clone();
+
+        // Clear all state.
+        self.buf.clear();
+        self.raw_len = 0;
+        self.pending_tone = None;
+        self.out_buf.clear();
+        self.committed.clear();
+        self.syl_structure.clear();
+        // DiffState::clear() also wipes the committed-word ring; keep the
+        // older words editable (a restore is an ordinary word commit).
+        let ring = ::core::mem::take(&mut self.diff.edit_history);
+        let ring_start = self.diff.edit_history_start;
+        let ring_len = self.diff.edit_history_len;
+        self.diff.clear();
+        self.diff.edit_history = ring;
+        self.diff.edit_history_start = ring_start;
+        self.diff.edit_history_len = ring_len;
+
+        // Record the word for post-commit editing: on screen it is the raw
+        // keystrokes (the transform was replaced).
+        self.diff.push_committed(entry_raw, target.clone());
+
+        // Diff from full_screen → target, writing suffix into diff_suffix.
+        let (bs, _) = Self::diff_into(&full_screen, &target, &mut self.diff.diff_suffix);
+        (bs, &self.diff.diff_suffix)
+    }
+
+    /// Word-boundary restore-raw rule: `true` when the finished token is not a
+    /// valid Vietnamese word and must show the literal keystrokes. A Vietnamese
+    /// word token is one syllable, so a token that needed a V-C-V split inside
+    /// it, or whose rendered syllable is impossible/incomplete, is
+    /// non-Vietnamese input.
+    fn should_restore_raw_on_commit(&self) -> bool {
+        // What is on screen for this word: V-C-V committed prefix + render.
+        let mut screen = crate::buffers::new_out_buffer();
+        let _ = screen.push_str(&self.diff.diff_committed);
+        let _ = screen.push_str(&self.diff.prev_rendered);
+        let mut raw = crate::buffers::new_out_buffer();
+        for &c in self.diff.word_raw.iter() {
+            let _ = raw.push(c);
+        }
+        // Already literal — nothing to restore.
+        if screen == raw {
+            return false;
+        }
+        // Sticky English passthrough owns the rest of this word.
+        if self.diff.english_sticky {
+            return false;
+        }
+        // Plain-letter differences come from intentional double-key cancels
+        // ("masster" → "master", "off" → "of") — those must stay.
+        if screen.is_ascii() {
+            return false;
+        }
+        // A V-C-V split inside this token glued several syllables together,
+        // which a single Vietnamese word never is.
+        if !self.diff.diff_committed.is_empty() {
+            return true;
+        }
+        crate::restore::rendered_syllable_needs_restore(&self.diff.prev_rendered)
     }
 }

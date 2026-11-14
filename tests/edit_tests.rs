@@ -34,6 +34,15 @@ impl Screen {
         }
     }
 
+    /// Screen with the English override (and with it the word-boundary
+    /// restore-raw rule) off: V-C-V tokens like "neebo" stay rendered
+    /// ("nêbo") instead of being restored to raw at commit.
+    fn new_no_restore(modern: bool) -> Self {
+        let mut s = Self::new(modern);
+        s.engine.set_english_override(false);
+        s
+    }
+
     /// Apply a (backspaces, suffix) instruction at the caret.
     fn apply(&mut self, bs: usize, out: &str) {
         let kept = self.caret.saturating_sub(bs);
@@ -64,7 +73,11 @@ impl Screen {
     /// Commit the engine's current composing word (e.g. an edited word) and
     /// post the commit space natively — the space is inserted at the caret.
     fn commit_composing(&mut self) {
-        let _ = self.engine.commit_diff();
+        // Apply the commit plan like the real host: the restore-raw rule
+        // can rewrite the word at the boundary.
+        let (bs, out) = self.engine.commit_diff();
+        let out = out.to_string();
+        self.apply(bs, &out);
         let head: String = self.text.chars().take(self.caret).collect();
         let tail: String = self.text.chars().skip(self.caret).collect();
         self.text = format!("{head} {tail}");
@@ -155,7 +168,8 @@ fn edit_tone_key_matches_fresh_typing() {
     ];
     for &(word, ch) in cases {
         let fresh = type_fresh(word, ch);
-        let mut s = Screen::new(true);
+        // V-C-V tokens are restored to raw at commit by default.
+        let mut s = Screen::new_no_restore(true);
         s.commit_word(word);
         s.arrow_left(); // caret onto the committed word's end
         let Some(edited) = s.edit(ch) else {
@@ -408,7 +422,7 @@ fn mid_word_literal_insert() {
 #[test]
 fn mid_word_tone_older_syllable_of_vcv_word() {
     // V-C-V word "neebo" → "nêbo" (splits into "nê"+"bo").
-    let mut s = Screen::new(true);
+    let mut s = Screen::new_no_restore(true);
     s.commit_word("neebo");
     // Caret after "nê" (caret_back 2 → 2 rendered chars before the caret):
     // 'f' snaps to the END of the first syllable's raw run — inserting at
@@ -425,7 +439,7 @@ fn mid_word_tone_older_syllable_of_vcv_word() {
 #[test]
 fn mid_word_tone_last_syllable_of_vcv_word() {
     // Same word; caret inside "bo" (after "nêb") → tone the LAST syllable.
-    let mut s = Screen::new(true);
+    let mut s = Screen::new_no_restore(true);
     s.commit_word("neebo");
     for _ in 0..2 {
         s.arrow_left();

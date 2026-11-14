@@ -127,10 +127,13 @@ fn sloppy_valid_telex_resolves() {
         ("quuxng ", "quũng "),
         ("cuofi ", "cuồi "),
         // Bare modifier keys still apply when a target exists.
-        ("aw ", "ă "),
         ("w ", "ư "),
         ("uw ", "ư "),
         ("ow ", "ơ "),
+        // Bare 'aw' is the one exception: ă is an always-closed rhyme, so the
+        // word boundary restores the literal keystrokes (open "ă" is not a
+        // Vietnamese word).
+        ("aw ", "aw "),
     ] {
         assert_eq!(type_seq(input), expected, "input: {:?}", input);
     }
@@ -158,17 +161,19 @@ fn absorb_holds_stray_vowel_then_rolls_back() {
 }
 
 // ------------------------------------------------------------------
-// V-C-V prefix commits are irreversible (documented limit)
+// V-C-V prefix commits: half-Vietnamese while typing, restored at the boundary
 // ------------------------------------------------------------------
 
 #[test]
-fn vcv_prefix_commit_is_final() {
-    // Once a V-C-V split commits a Vietnamese-looking prefix, the tail
-    // cannot un-transform it — the word stays half-Vietnamese. This is a
-    // documented design limit (the prefix is already on screen).
-    assert_eq!(type_seq("neeboxyz "), "nêboxyz ");
-    assert_eq!(type_seq("meexyz "), "mêxyz ");
-    assert_eq!(type_seq("seejing "), "sêjing ");
+fn vcv_prefix_commit_restores_raw_at_boundary() {
+    // While typing, a V-C-V split commits a Vietnamese-looking prefix and the
+    // tail cannot un-transform it — the word is half-Vietnamese on screen.
+    // The word boundary then restores the literal keystrokes: a Vietnamese
+    // word token is one syllable, so a glued multi-syllable token is not
+    // Vietnamese input (LabanKey's "restore English words" rule).
+    assert_eq!(type_seq("neeboxyz "), "neeboxyz ");
+    assert_eq!(type_seq("meexyz "), "meexyz ");
+    assert_eq!(type_seq("seejing "), "seejing ");
 }
 
 // ------------------------------------------------------------------

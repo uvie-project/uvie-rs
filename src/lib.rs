@@ -21,6 +21,7 @@ pub mod tone;
 pub(crate) mod composing;
 pub mod diff;
 pub(crate) mod modifier;
+pub(crate) mod restore;
 pub(crate) mod tone_handler;
 pub(crate) mod validation;
 
