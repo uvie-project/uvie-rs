@@ -13,7 +13,8 @@ A zero-dependency library with **no heap allocation in the hot path**. Designed 
 - **Relaxed coda mode**: Optional lenient coda validation for flexible typing.
 - **Post-coda tone keys on centering diphthongs** (UniKey-compatible): `viets` → `viết`, `tiens` → `tiến`, `hues` → `huế`, `kieux` → `kiễu` — the tone key applies after the coda and the render resolves to the written circumflex form.
 - **Committed-word editing** (LabanKey-style): `edit_at` re-enters any of the last 8 committed words — at the word-end boundary or a caret strictly inside the word — and returns `(backspaces, forward_deletes, suffix)` so the host can re-render it in place.
-- **English override dictionary**: a ~15k-word table keeps English words literal (`permission`, `system`), with sticky passthrough so the rest of an overridden word stays raw. Words that would shadow real Telex sequences (e.g. `tojo` before `tojot` → `tột`) are filtered out.
+- **LabanKey-style English handling**: tokens that are not a valid Vietnamese word restore their literal keys at the word boundary (`law`, `after`), common English words in an English sentence stay English (`how are you`), and Vietnamese words the dictionary used to swallow re-open (`soong` → `sông`).
+- **English override dictionary**: a ~18k-word table keeps English words literal (`permission`, `system`), with sticky passthrough so the rest of an overridden word stays raw. Words that would shadow real Telex sequences (e.g. `tojo` before `tojot` → `tột`) are filtered out.
 - **Per-character state**: Each keystroke gets its own state entry; transforms are bit-flips, not multi-pass reordering.
 - **Validate raw keystrokes**: Checks raw ASCII sequence against positive syllable tables before any transform. English passthrough is automatic.
 - **Diff-based API**: Returns `(backspace_count, suffix_to_type)` per keystroke for minimal screen updates.
