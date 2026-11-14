@@ -53,27 +53,35 @@ The engine has two APIs:
 - **`edit_at_caret_diff(caret_back, ch)`** — post-commit word editing
   (LabanKey-style; FFI `uvie_engine_edit_at`)
   - The host tracks the caret distance (`caret_back`, screen chars) back to
-    the end of the newest committed word. The engine walks its committed-word
-    ring (cap 8, each entry = raw + rendered) accumulating
-    `rendered_len + 1` boundary char per older word; the edit fires when
-    `caret_back` EXACTLY matches a word-end boundary (0 = newest word) or
-    lands strictly inside a word (mid-word edit). Unmatched carets (word
-    start, double spaces, unseen caret jumps) return None — the host feeds
-    the key normally.
+    the end of the NEWEST committed word (positive = left of it). Each ring
+    entry (cap 8) = raw + rendered + `gap`, the separator chars on screen
+    right after that word. Word-end offsets: `end(0) = 0`,
+    `end(k+1) = end(k) + rendered_len(k) + gap(k+1)`. The edit fires when
+    `caret_back` EXACTLY matches a word end or lands strictly inside a word
+    (mid-word edit); anything else returns None and the host feeds normally.
+  - Separators: `commit_diff` on a composing word pushes it with gap 0; an
+    idle `commit_diff` records nothing (no phantom words). The host reports
+    every separator it lets the app insert with `note_separator()` and every
+    one it deletes with `remove_separator()`; `trailing_gap()` is the newest
+    word's gap (the host only types a new word at `caret_back ==
+    -trailing_gap`, otherwise it resets). `feed_diff(boundary)` = commit_diff
+    + note_separator + the char, so punctuation never wipes the ring.
   - Returns `(backspaces, forward_deletes, suffix)`. Word-end edits get
     `forward_deletes = 0` and `suffix` = the diffed tail; mid-word edits
     rewrite the whole word: `backspaces` = rendered chars left of the
     caret, `forward_deletes` = the old word's tail (chars right of the
     caret — the host must remove them first), and `suffix` = the full
     re-rendered word, posted after the deletions. The caret ends at the
-    edited word's end.
-  - On a match: the target word AND all newer entries are popped (their
-    anchor geometry is stale once the target is re-entered); older entries
-    survive and stay editable. The extended raw is re-rendered from scratch
-    through the live pipeline (`reset_diff()` + `feed_diff` replay —
-    rebuilding composing state, V-C-V splits, the English override and the
-    snapshot stack exactly as fresh typing would), then diffs
-    old-rendered → new render.
+    edited word's end; the host re-anchors with `last_caret_back_after_edit()`
+    (FFI `uvie_engine_last_caret_back`).
+  - The target entry is updated IN PLACE (no entry is popped, newer words
+    stay editable) and the engine stays IDLE. The new raw is rendered on a
+    scratch engine; only the dictionary applies to it (the restore-raw and
+    context rules judge finished words, not in-place edits).
+  - `backspace_at_caret_diff(caret_back)` (FFI `uvie_engine_backspace_at`):
+    at a word end, undo that word's last keystroke in place ("viêt " ⌫⌫ →
+    "viê", then 'j' → "việ"). A word that becomes empty is removed and its
+    gap merges into the older neighbor.
   - Mid-word placement (`edit_mid_word`): the entry's raw is replayed on a
     scratch engine to recover each V-C-V syllable boundary and rendered
     span. Tone/modifier keys apply at the END of the caret's syllable raw
@@ -81,9 +89,6 @@ The engine has two APIs:
     the caret's exact position inside the word raw. Edits at the word's
     first raw key, keys that would only expand an already-resolved
     nucleus, and positions the replay can't place all decline.
-  - After a successful edit the engine is COMPOSING the edited word, so
-    backspace walks it back like normal composing and the next space
-    re-records it. The host re-anchors its caret offset to 0.
   - Cost: zero on the per-keystroke hot path; the ring push is two small
     buffer copies once per space. The scratch replay only runs on edits.
   - Supersedes the older `edit_newest_diff`/`uvie_engine_edit_newest` API
