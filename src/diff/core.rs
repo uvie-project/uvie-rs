@@ -37,6 +37,7 @@ impl UltraFastViEngine {
             // longer describe the whole word. Hosts must not offer a literal
             // restore for it (see `word_raw_string`).
             self.diff.word_raw_overflowed = true;
+            self.diff.word_had_cancel = false;
             self.diff.english_fallback = None;
             self.diff.prev_inner_render.clear();
             self.diff.last_valid_raw_len = 0;
@@ -293,6 +294,7 @@ impl UltraFastViEngine {
         self.diff.last_valid_out = fb.snap.last_valid_out;
         self.diff.diff_committed = fb.diff_committed;
         self.diff.word_raw.truncate(fb.word_len);
+        self.diff.word_had_cancel = fb.snap.word_had_cancel;
         self.diff.english_sticky = false;
 
         // Replay the tail through the live pipeline (snapshots, V-C-V splits
@@ -390,6 +392,8 @@ impl UltraFastViEngine {
         self.diff.last_valid_raw_len = 0;
         self.diff.last_valid_coda_start = 0;
         self.diff.last_valid_out.clear();
+        // The replay below re-fires any cancel the surviving keys contain.
+        self.diff.word_had_cancel = false;
 
         // Replay the surviving keystrokes through the core pipeline. This does
         // not touch `key_log` (the wrapper owns appends; V-C-V/full-buffer cannot

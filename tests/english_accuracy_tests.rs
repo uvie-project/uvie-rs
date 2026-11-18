@@ -197,6 +197,67 @@ fn doubled_tone_keys_in_english_words() {
 }
 
 #[test]
+fn all_caps_acronyms_are_not_sentence_context() {
+    // An acronym or a code identifier says nothing about the sentence
+    // language: Vietnamese prose is full of them ("dùng cả CI/CD"), so they
+    // must not restore the Vietnamese words in front of them.
+    for (input, expected) in [
+        ("car CI/CD ", "cả CI/CD "),
+        ("nos CI/CD ", "nó CI/CD "),
+        ("car CI ", "cả CI "),
+        ("car CD ", "cả CD "),
+        ("car JIRA ", "cả JIRA "),
+        ("taats car CI/CD ", "tất cả CI/CD "),
+        ("dungf API ", "dùng API "),
+        ("nos goij API ", "nó gọi API "),
+        // An older acronym is neutral context for the next word.
+        ("API cos ", "API có "),
+        ("CI car ", "CI cả "),
+        // A real English word still restores what is in front of it.
+        ("car the ", "car the "),
+        ("this is a test ", "this is a test "),
+        ("Hello how are you ", "Hello how are you "),
+        // The acronym keeps its letters, the code identifier its keys.
+        ("deploy CI/CD ", "deploy CI/CD "),
+        ("CI/CD ", "CI/CD "),
+        ("JIRA ", "JIRA "),
+        ("AX ", "AX "),
+        ("VIEETJ NAM ", "VIỆT NAM "),
+    ] {
+        assert_eq!(type_telex(input), expected, "input: {input:?}");
+    }
+}
+
+#[test]
+fn cancelled_tone_key_commits_the_render() {
+    // A double-press cancel is an explicit user choice: the word commits as
+    // the cancelled render and the cancelling key is never typed back.
+    for (input, expected) in [
+        ("carr ", "car "),
+        ("carr/", "car/"),
+        ("carr the ", "car the "),
+        ("carr CI/CD ", "car CI/CD "),
+        ("this is carr ", "this is car "),
+        // The doubled-key English words keep their keys.
+        ("off ", "off "),
+        ("diff ", "diff "),
+        ("lossless ", "lossless "),
+        ("carry ", "carry "),
+        ("err ", "err "),
+        // Not English doubled-key words: the render stands.
+        ("tesst ", "test "),
+        ("masster ", "master "),
+        ("resset ", "reset "),
+        ("toffo ", "tofo "),
+        // No cancel: the Vietnamese marks stay.
+        ("befe ", "bề "),
+        ("vieejt ", "việt "),
+    ] {
+        assert_eq!(type_telex(input), expected, "input: {input:?}");
+    }
+}
+
+#[test]
 fn all_caps_acronyms_keep_their_letters() {
     for (input, expected) in [
         ("JIRA ", "JIRA "),

@@ -19,6 +19,9 @@ pub struct ComposingSnapshot {
     pub last_valid_raw_len: usize,
     pub last_valid_coda_start: usize,
     pub last_valid_out: OutBuffer,
+    /// A double-press tone-key cancel already fired in the composing word
+    /// (see `DiffState::word_had_cancel`).
+    pub word_had_cancel: bool,
 }
 
 /// A committed word kept for post-commit editing (arrow-back onto the word
@@ -47,6 +50,10 @@ pub struct CommittedWord {
     /// geometry but declines post-commit edits; native deletes keep shrinking
     /// its rendered text.
     pub editable: bool,
+    /// The word was typed with a double-press tone-key cancel ("carr"), so
+    /// its `raw` holds a key the user cancelled. The retroactive English fix
+    /// must never rewrite this entry back to that raw.
+    pub had_cancel: bool,
 }
 
 /// Pre-override Vietnamese pipeline state, saved when the English
@@ -156,6 +163,10 @@ pub struct DiffState {
     /// The composing word started right after a glued code separator: it is a
     /// code identifier and shows its literal keystrokes.
     pub word_after_code: bool,
+    /// A double-press tone-key cancel fired in the composing word ("carr":
+    /// the second `r` cancelled the hỏi). The user asked for the cancelled
+    /// render, so a commit must not restore the keystrokes that produced it.
+    pub word_had_cancel: bool,
 }
 
 impl Default for DiffState {
@@ -192,6 +203,7 @@ impl DiffState {
             last_sep_glued: false,
             word_since_sep: false,
             word_after_code: false,
+            word_had_cancel: false,
         }
     }
 
@@ -227,6 +239,7 @@ impl DiffState {
         // judged against the char before it), so only a full reset drops it.
         self.word_since_sep = false;
         self.word_after_code = false;
+        self.word_had_cancel = false;
     }
 
     /// Drop the separator history (`last_sep` / glued state) — full reset
@@ -252,6 +265,7 @@ impl DiffState {
             gap: 0,
             sep: '\0',
             editable: true,
+            had_cancel: false,
         });
         self.edit_history_len += 1;
         self.word_since_sep = true;

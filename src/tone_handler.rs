@@ -121,6 +121,9 @@ impl ToneHandler for UltraFastViEngine {
             let mut cancelled = Syl::consonant(b, caps);
             cancelled.flags |= F_LITERAL;
             self.buf.push(cancelled);
+            // The commit must not restore the keystrokes that produced the
+            // cancelled tone ("carr" stays "car", not "carr").
+            self.diff.word_had_cancel = true;
             return;
         }
 

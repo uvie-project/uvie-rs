@@ -92,7 +92,13 @@ fn cancelled_tone_key_is_literal() {
 #[test]
 fn cancelled_tone_key_is_literal_vni() {
     assert_cases(
-        &[("re11e", "re1e"), ("to22o", "to2o"), ("ra11a ", "ra11a ")],
+        &[
+            ("re11e", "re1e"),
+            ("to22o", "to2o"),
+            ("ra11a ", "ra11a "),
+            // The cancelled word commits as its render, digit included.
+            ("ca33 ", "ca3 "),
+        ],
         InputMethod::Vni,
     );
 }
@@ -109,8 +115,8 @@ fn cancel_words_keep_their_current_render() {
             ("masster ", "master "),
             ("ressult ", "result "),
             ("dosse ", "dose "),
-            ("rassa ", "rassa "),
-            ("taxxa ", "taxxa "),
+            ("rassa ", "rasa "),
+            ("taxxa ", "taxa "),
             ("ressolve ", "resolve "),
             ("possess ", "possess "),
             ("assess ", "assess "),
@@ -315,10 +321,7 @@ fn edit_at_replays_the_cancelled_key_as_literal() {
 #[test]
 fn cancel_inside_a_sentence() {
     assert_eq!(type_diff("resset nam ", InputMethod::Telex), "reset nam ");
-    assert_eq!(
-        type_diff("rassa taxxa ", InputMethod::Telex),
-        "rassa taxxa "
-    );
+    assert_eq!(type_diff("rassa taxxa ", InputMethod::Telex), "rasa taxa ");
 }
 
 #[test]
@@ -326,8 +329,8 @@ fn cancel_keeps_letter_case() {
     // The literal key and the restored keystrokes keep the typed case.
     assert_cases(
         &[
-            ("Rassa ", "Rassa "),
-            ("RASSA ", "RASSA "),
+            ("Rassa ", "Rasa "),
+            ("RASSA ", "RASA "),
             ("Resset ", "Reset "),
         ],
         InputMethod::Telex,

@@ -289,6 +289,7 @@ impl Diffable for UltraFastViEngine {
             last_valid_raw_len: self.diff.last_valid_raw_len,
             last_valid_coda_start: self.diff.last_valid_coda_start,
             last_valid_out: self.diff.last_valid_out.clone(),
+            word_had_cancel: self.diff.word_had_cancel,
         });
 
         // Append to key_log and word_raw, then run the core pipeline.
@@ -372,6 +373,7 @@ impl Diffable for UltraFastViEngine {
                         last_valid_raw_len: self.diff.last_valid_raw_len,
                         last_valid_coda_start: self.diff.last_valid_coda_start,
                         last_valid_out: self.diff.last_valid_out.clone(),
+                        word_had_cancel: self.diff.word_had_cancel,
                     },
                     diff_committed: self.diff.diff_committed.clone(),
                     word_len: self.diff.word_raw.len(),
@@ -519,6 +521,7 @@ impl Diffable for UltraFastViEngine {
             self.diff.last_valid_raw_len = snap.last_valid_raw_len;
             self.diff.last_valid_coda_start = snap.last_valid_coda_start;
             self.diff.last_valid_out = snap.last_valid_out;
+            self.diff.word_had_cancel = snap.word_had_cancel;
 
             // Diff old vs new composing text.
             let (bs, _) =
@@ -732,7 +735,12 @@ impl UltraFastViEngine {
     ///
     /// Whenever the word ends up English, older ambiguous words separated by
     /// a single char are restored too ("this is a test" must not stay
-    /// "thí í a tét"), and the returned plan rewrites that whole span.
+    /// "thí í a tét"), and the returned plan rewrites that whole span. An
+    /// ALL-CAPS acronym or a code identifier is not English proof and restores
+    /// nothing in front of it ("car CI/CD" stays "cả CI/CD").
+    ///
+    /// A double-press cancel commits the cancelled render ("carr" → "car")
+    /// unless the doubled key spells a genuinely English word ("off", "err").
     pub fn commit_with_boundary_diff(&mut self, boundary: char) -> (usize, &str) {
         // Nothing composing: there is no word to record. An idle commit (a
         // boundary key pressed after punctuation or a second Space) must not
@@ -745,12 +753,17 @@ impl UltraFastViEngine {
 
         let gate = self.enable_english_override && !self.diff.word_raw.is_empty();
 
+        // An ALL-CAPS acronym or a code identifier is no proof that the
+        // sentence is English, so such a word must not restore the words in
+        // front of it ("car CI/CD" stays "cả CI/CD").
+        let retro_ok = gate && self.retro_allowed(boundary);
+
         // English dictionary override: if the full word matches a known
         // English word, replace the Vietnamese transform with the raw English
         // word. The diff engine computes the backspaces needed to transform
         // what's on screen (diff_committed + prev_rendered) into the raw word.
         if gate && crate::tables::is_english_override(&self.diff.word_raw) {
-            return self.commit_restoring_raw();
+            return self.commit_restoring_raw(retro_ok);
         }
 
         // Raw-keystroke rules: a code identifier, an English word whose
@@ -763,15 +776,24 @@ impl UltraFastViEngine {
             && !self.diff.word_raw_overflowed
             && self.should_restore_code_or_english_token(boundary)
         {
-            return self.commit_restoring_raw();
+            return self.commit_restoring_raw(retro_ok);
         }
 
         // Restore-raw rule (LabanKey): a finished token that is not a valid
         // Vietnamese word shows the literal keystrokes instead of the marks
         // the pipeline applied to it ("law" → "lă", "after" → "àtẻ"). Same
         // toggle as the dictionary — the host's "restore English" setting.
-        if gate && !self.diff.word_raw_overflowed && self.should_restore_raw_on_commit() {
-            return self.commit_restoring_raw();
+        // A double-press cancel left a plain-ASCII render ("forr" → "for",
+        // "hoss" → "hos"): that render is what the user asked for, so the
+        // context rules below must not bring the cancelled key back.
+        let cancel_kept = gate && self.cancel_left_ascii_render();
+
+        if gate
+            && !cancel_kept
+            && !self.diff.word_raw_overflowed
+            && self.should_restore_raw_on_commit()
+        {
+            return self.commit_restoring_raw(retro_ok);
         }
 
         // Ambiguous English word: a common English word that renders as a
@@ -779,8 +801,12 @@ impl UltraFastViEngine {
         // "bét") is restored when its Vietnamese reading is rare or the
         // previous committed word is English. Vietnamese context never
         // qualifies, so Vietnamese typing is unaffected.
-        if gate && !self.diff.word_raw_overflowed && self.should_restore_ambiguous_english() {
-            return self.commit_restoring_raw();
+        if gate
+            && !cancel_kept
+            && !self.diff.word_raw_overflowed
+            && self.should_restore_ambiguous_english()
+        {
+            return self.commit_restoring_raw(retro_ok);
         }
 
         // Capture the word for post-commit editing before the clears wipe
@@ -793,8 +819,13 @@ impl UltraFastViEngine {
         // A plainly-typed English word needs no restore, but it still proves
         // the sentence is English: older ambiguous words may be restored. A
         // word that outgrew the raw buffer only knows its tail — skip it.
-        let plain_english =
-            gate && !self.diff.word_raw_overflowed && self.word_is_plain_english(&entry_rendered);
+        // A word whose cancel collapsed to a known English word ("carr" →
+        // "car") proves it just the same.
+        let plain_english = retro_ok
+            && !self.diff.word_raw_overflowed
+            && (self.cancel_render_is_english_word()
+                || self.word_is_plain_english(&entry_rendered));
+        let entry_had_cancel = self.diff.word_had_cancel;
 
         self.buf.clear();
         self.raw_len = 0;
@@ -816,6 +847,7 @@ impl UltraFastViEngine {
         self.diff.diff_committed.clear();
         self.diff.diff_suffix.clear();
         self.diff.word_raw_overflowed = false;
+        self.diff.word_had_cancel = false;
         self.diff.english_sticky = false;
         self.diff.english_fallback = None;
         // Clear the snapshot stack — stale snapshots from the committed word
@@ -835,6 +867,11 @@ impl UltraFastViEngine {
         // Record the word now that the clears are done (push_committed must
         // not be wiped by the diff-state clear above).
         self.diff.push_committed(entry_raw, entry_rendered);
+        if entry_had_cancel {
+            if let Some(entry) = self.diff.committed_mut(0) {
+                entry.had_cancel = true;
+            }
+        }
         (retro.unwrap_or(0), &self.diff.diff_suffix)
     }
 
@@ -1100,8 +1137,10 @@ impl UltraFastViEngine {
     /// every restore rule.
     ///
     /// The word is English, so the ambiguous words in front of it are too:
-    /// the retroactive fix rewrites the span from the oldest restored word.
-    fn commit_restoring_raw(&mut self) -> (usize, &str) {
+    /// the retroactive fix rewrites the span from the oldest restored word
+    /// (`retro` is false when the word cannot prove the sentence language —
+    /// an ALL-CAPS acronym or a code identifier).
+    fn commit_restoring_raw(&mut self, retro: bool) -> (usize, &str) {
         // Build full on-screen text (Vietnamese) in a stack buffer.
         let mut full_screen = crate::buffers::new_out_buffer();
         let _ = full_screen.push_str(&self.diff.diff_committed);
@@ -1138,14 +1177,15 @@ impl UltraFastViEngine {
 
         // The ring still holds the older words and not this one: restore the
         // ambiguous ones the English word proves were English too.
-        let retro = if overflowed {
+        let retro = if !retro || overflowed {
             None
         } else {
             self.retro_restore_english(&full_screen, &target)
         };
 
         // Record the word for post-commit editing: on screen it is the raw
-        // keystrokes (the transform was replaced).
+        // keystrokes (the transform was replaced), so the ring entry needs no
+        // cancel bookkeeping — rendered == raw already blocks a retro restore.
         self.diff.push_committed(entry_raw, target.clone());
 
         match retro {
@@ -1212,9 +1252,77 @@ impl UltraFastViEngine {
             return true;
         }
         if crate::tables::is_english_doubled_key_word(&self.diff.word_raw) {
-            return true;
+            return !self.cancel_render_is_english_word();
         }
         self.should_restore_acronym()
+    }
+
+    /// A double-press cancel leaves the cancelled word on screen ("carr"
+    /// renders "car"), and that render is what the user asked for. When it is
+    /// itself a known English word of at least three letters, the
+    /// doubled-key English rule must not re-insert the cancelling key.
+    ///
+    /// A two-letter cancelled form ("of", "er") is too weak a signal: the
+    /// doubled key is far more likely part of a genuinely English word, so
+    /// "off" and "err" keep their keys.
+    fn cancel_render_is_english_word(&self) -> bool {
+        if !self.diff.word_had_cancel {
+            return false;
+        }
+        // The whole word on screen (V-C-V prefix + composing render).
+        let mut screen = crate::buffers::new_out_buffer();
+        let _ = screen.push_str(&self.diff.diff_committed);
+        let _ = screen.push_str(&self.diff.prev_rendered);
+        if screen.chars().count() < 3 || !screen.chars().all(|c| c.is_ascii_alphabetic()) {
+            return false;
+        }
+        let mut chars = CharVec::<24>::new();
+        for c in screen.chars() {
+            if !chars.try_push(c) {
+                return false;
+            }
+        }
+        crate::tables::is_english_context_word(&screen)
+            || crate::tables::is_english_override(&chars)
+            || crate::tables::is_english_ambiguous_word(&chars)
+    }
+
+    /// A double-press cancel fired and the word on screen is plain ASCII
+    /// letters: the cancelled render, which must stay as it is.
+    fn cancel_left_ascii_render(&self) -> bool {
+        self.diff.word_had_cancel
+            && !self.diff.prev_rendered.is_empty()
+            && self
+                .diff
+                .diff_committed
+                .chars()
+                .chain(self.diff.prev_rendered.chars())
+                .all(|c| c.is_ascii_alphabetic())
+    }
+
+    /// Whether the current word may restore the ambiguous English words in
+    /// front of it. An ALL-CAPS acronym ("CI", "CD", "JIRA") or a code
+    /// identifier proves nothing about the sentence language — Vietnamese
+    /// prose is full of them ("dùng cả CI/CD", "nó gọi API") — so it must not
+    /// rewrite the Vietnamese words before it.
+    fn retro_allowed(&self, boundary: char) -> bool {
+        !self.diff.word_after_code
+            && !is_code_end_char(boundary)
+            && !Self::is_all_caps_token(&self.diff.word_raw)
+    }
+
+    /// Every letter is uppercase ASCII and there are at least two of them;
+    /// digits are allowed ("CI", "CD", "API", "JIRA", "HTTP2").
+    fn is_all_caps_token(raw: &[char]) -> bool {
+        let mut letters = 0usize;
+        for &c in raw {
+            if c.is_ascii_uppercase() {
+                letters += 1;
+            } else if !c.is_ascii_digit() {
+                return false;
+            }
+        }
+        letters >= 2
     }
 
     /// ALL-CAPS acronym rule: 2..=5 uppercase ASCII letters whose render is
@@ -1273,6 +1381,13 @@ impl UltraFastViEngine {
             .all(|c| c.is_ascii_alphabetic() || c == '\'')
         {
             return PrevWordKind::Vietnamese;
+        }
+        // An ALL-CAPS acronym ("CI", "JIRA") is neither English nor Vietnamese
+        // context: Vietnamese prose is full of them ("dùng cả CI/CD"). A word
+        // committed through an explicit cancel press ("carr" → "car") is the
+        // same: plain ASCII, no sentence-language signal.
+        if prev.had_cancel || Self::is_all_caps_token(&prev.raw) {
+            return PrevWordKind::Neutral;
         }
         // Restored words are on screen as typed.
         if prev.raw.len() != prev.rendered.chars().count()
@@ -1384,12 +1499,16 @@ impl UltraFastViEngine {
             if entry.gap != 1 {
                 break;
             }
-            let restorable = entry.rendered.chars().count() != entry.raw.len()
-                || !entry
-                    .raw
-                    .iter()
-                    .zip(entry.rendered.chars())
-                    .all(|(&a, b)| a == b);
+            // A word typed with an explicit cancel press is on screen as the
+            // cancelled render ("carr" → "car"): its raw holds a key the user
+            // removed, so it must never be restored back to that raw.
+            let restorable = !entry.had_cancel
+                && (entry.rendered.chars().count() != entry.raw.len()
+                    || !entry
+                        .raw
+                        .iter()
+                        .zip(entry.rendered.chars())
+                        .all(|(&a, b)| a == b));
             if restorable
                 && crate::tables::english_ambiguous_score(&entry.raw)
                     .is_some_and(|score| score <= 25)

@@ -361,8 +361,21 @@ rules; all gated by `set_english_override`, none on the per-keystroke path:
 - **Retroactive fix** (`retro_restore_english`): when a committed word is
   English, up to 3 older ambiguous words (score <= 25, one separator apart)
   are restored too and the commit plan rewrites the span ("this is a test").
+  An ALL-CAPS acronym or a code identifier is NOT English proof: it commits
+  its letters/keys but restores nothing in front of it ("car CI/CD" stays
+  "cả CI/CD", "nos goij API" stays "nó gọi API"). `prev_word_kind` reads such
+  a word as Neutral, so it is no English context for the next word either
+  ("API cos" → "API có").
 - **Doubled tone keys** (`ENGLISH_DOUBLED_KEY_WORDS`): off, diff, staff keep
   their letters; non-English sequences still cancel ("masster" → "master").
+  An explicit cancel press wins when its render is itself a known English
+  word of 3+ letters: "carr" commits "car", not "carr" (`word_had_cancel` in
+  `DiffState`, set by the double-same-tone-key cancel in `tone_handler`;
+  cancelled ring entries keep `had_cancel` so the retro fix never rewrites
+  them back). Two-letter cancelled forms ("of", "er") keep the raw word
+  ("off", "err"). Any other cancel that leaves a plain-ASCII render keeps
+  that render: the restore-raw and ambiguous rules skip it
+  (`cancel_left_ascii_render`), so "rassa" → "rasa", "dosse" → "dose".
 - **ALL-CAPS acronyms**: 2..=5 capitals whose render is not a common
   Vietnamese syllable stay literal (JIRA, AX, OS); "VIỆT NAM" is kept.
 - **Code tokens**: `note_separator(ch)` records the separator char;
