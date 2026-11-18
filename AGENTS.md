@@ -347,6 +347,40 @@ with tone-at-end and tone-before-coda orders: 98 → 70 mismatches (remaining:
 hoà/hòa orthography style, boong/xoong, and roots/boots/keeps which stay
 English because they prefix dictionary words).
 
+### English accuracy round 2 (2026-11)
+Replaces the sentence-context rule (layer 3 above) and adds three commit-time
+rules; all gated by `set_english_override`, none on the per-keystroke path:
+
+- **Rarity-scored ambiguous words** (`should_restore_ambiguous_english`):
+  `ENGLISH_AMBIGUOUS_WORDS` (top-20k English words whose render carries marks)
+  stores a Vietnamese score = how often the render appears as a token in the
+  22k list (í 3, ò 1, tét 2, ít 21, môn 27). Score 0 → English everywhere;
+  score <= 5 after a neutral previous word → English; otherwise English only
+  after an English previous word. Loanwords (`VIETNAMESE_LOANWORDS`: ok, file,
+  test...) count as Vietnamese context.
+- **Retroactive fix** (`retro_restore_english`): when a committed word is
+  English, up to 3 older ambiguous words (score <= 25, one separator apart)
+  are restored too and the commit plan rewrites the span ("this is a test").
+- **Doubled tone keys** (`ENGLISH_DOUBLED_KEY_WORDS`): off, diff, staff keep
+  their letters; non-English sequences still cancel ("masster" → "master").
+- **ALL-CAPS acronyms**: 2..=5 capitals whose render is not a common
+  Vietnamese syllable stay literal (JIRA, AX, OS); "VIỆT NAM" is kept.
+- **Code tokens**: `note_separator(ch)` records the separator char;
+  `commit_with_boundary_diff(boundary)` (FFI `uvie_engine_commit_with`) knows
+  the char that ends the word. Words glued after `_` `` ` `` `=` `\` `@` `$`
+  or a glued `.`, or ended by `_` `` ` `` `=` `\` `@`, stay literal
+  (`feed_diff`, `raw_chars`). Brackets, `#`, `<>`, `(`, `/`, `-`, `:` are
+  normal Vietnamese punctuation and never trigger.
+
+Measured with `crates/uvie-host/examples/zz_corpus.rs` (17k words of English
+prose): 601 → 142 wrong words; Vietnamese prose (`zz_vi.rs`) unchanged.
+
+**Host contract:** a commit plan must reach the app BEFORE the separator key.
+A macOS CGEventTap delivers a passed-through key before anything it posts, so
+uvie-mac consumes the boundary key whenever the plan is non-empty, applies
+the plan, then re-posts the separator (text for Space/punctuation, the
+original keycode + flags for Enter).
+
 ### English Dictionary Override (2026-08, expanded 2026-10)
 `src/tables/english.rs` — 18,039 common English words that produce garbled
 Vietnamese+English hybrids (e.g. `character`→`chẩcter`, `safari`→`sầri`,
