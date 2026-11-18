@@ -1399,6 +1399,21 @@ impl UltraFastViEngine {
         {
             return PrevWordKind::Vietnamese;
         }
+        // A top Vietnamese syllable stays Vietnamese evidence even when its
+        // letters also spell an English word ("em", "to", "no"): the English
+        // tables are built from an inventory, so they read these particles as
+        // English. A short one is also a likely English word ("to", "me"), so
+        // it is neutral; a longer one keeps the sentence Vietnamese ("anh",
+        // "con"). The curated English context words ("the", "is") still win.
+        if crate::tables::is_top_vietnamese_syllable(&prev.rendered)
+            && !crate::tables::is_english_context_word(&prev.rendered)
+        {
+            return if prev.rendered.chars().count() <= 2 {
+                PrevWordKind::Neutral
+            } else {
+                PrevWordKind::Vietnamese
+            };
+        }
         if crate::tables::is_english_context_word(&prev.rendered) {
             return PrevWordKind::English;
         }
@@ -1455,6 +1470,16 @@ impl UltraFastViEngine {
         let Some(score) = crate::tables::english_ambiguous_score(&self.diff.word_raw) else {
             return false;
         };
+        // A render that is a top Vietnamese syllable ("nó", "vẻ", "bú") is a
+        // word Vietnamese speakers type all the time: the rarity score is an
+        // inventory count, not a frequency, so it cannot judge these. Only a
+        // genuinely English sentence ("the car") restores them.
+        if crate::tables::is_top_vietnamese_syllable(&screen) {
+            return self
+                .diff
+                .newest_committed()
+                .is_some_and(|prev| self.prev_word_kind(prev) == PrevWordKind::English);
+        }
         // A render the Vietnamese word list never contains (pẻ, ák) is not a
         // Vietnamese word at all: the English reading wins everywhere.
         if score == 0 {
@@ -1501,8 +1526,12 @@ impl UltraFastViEngine {
             }
             // A word typed with an explicit cancel press is on screen as the
             // cancelled render ("carr" → "car"): its raw holds a key the user
-            // removed, so it must never be restored back to that raw.
+            // removed, so it must never be restored back to that raw. A top
+            // Vietnamese syllable ("vẻ", "nó", "cả") is never restored either,
+            // whatever the score says: it is a word the user very likely
+            // meant, so it counts as a non-restorable entry.
             let restorable = !entry.had_cancel
+                && !crate::tables::is_top_vietnamese_syllable(&entry.rendered)
                 && (entry.rendered.chars().count() != entry.raw.len()
                     || !entry
                         .raw

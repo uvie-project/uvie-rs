@@ -394,6 +394,30 @@ uvie-mac consumes the boundary key whenever the plan is non-empty, applies
 the plan, then re-posts the separator (text for Space/punctuation, the
 original keycode + flags for Enter).
 
+### Top Vietnamese syllables (2026-11)
+The rarity score is an inventory count, not a frequency: the most common
+particles score as rare there (nó 1, vẻ 7, sẽ 8, mã 22, cả 21, bú 0), so
+"em nos" flipped "nó" back to "nos" and a later English word rewrote "vẻ".
+`src/tables/vietnamese_top.rs` is the curated exception (432 hand-picked
+syllables/particles, NFC lowercase, code-point sorted, case-insensitive
+binary search; `is_top_vietnamese_syllable`):
+
+- `prev_word_kind`: a top syllable that is not a curated English context word
+  is Neutral when short ("em", "to") and Vietnamese when longer ("anh",
+  "con"), before the English override/ambiguous/doubled-key checks.
+- `should_restore_ambiguous_english`: a render on the list ignores the score
+  (including the score-0 shortcut) and is restored only after an English
+  previous word ("the car" → "the car", but "bus" → "bú", "em nos" → "em nó").
+- `retro_restore_english`: a top-syllable entry is never restored, whatever
+  its score, and `prev_word_kind` stops the walk there ("ver the" → "vẻ the",
+  "nos the" → "nó the").
+
+Known trade-off: an English word whose render is a top syllable is no longer
+restored by the retro walk or by a neutral previous word ("car the" → "cả the",
+"me too" → "me tô"). Keep English-heavy renders off the list: á, hơ, nơ, tô,
+lơ, hót were removed because "as soon as", "how are you", "too", "host" need
+them.
+
 ### English Dictionary Override (2026-08, expanded 2026-10)
 `src/tables/english.rs` — 18,039 common English words that produce garbled
 Vietnamese+English hybrids (e.g. `character`→`chẩcter`, `safari`→`sầri`,

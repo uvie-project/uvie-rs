@@ -27,6 +27,7 @@ mod english_context;
 mod glide;
 mod nucleus;
 mod onset;
+mod vietnamese_top;
 
 pub use coda::{is_legal_coda, tone_allowed_for_coda};
 pub use english::{is_english_override, is_english_prefix};
@@ -39,6 +40,7 @@ pub use nucleus::{
     is_legal_nucleus, nucleus_allows_coda, nucleus_tone_target, rhyme_coda_compatible,
 };
 pub use onset::{is_legal_onset, is_onset_prefix, onset_nucleus_compatible};
+pub use vietnamese_top::is_top_vietnamese_syllable;
 
 /// Validates a complete syllable given its three components expressed as
 /// resolved output characters.

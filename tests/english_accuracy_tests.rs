@@ -213,8 +213,9 @@ fn all_caps_acronyms_are_not_sentence_context() {
         // An older acronym is neutral context for the next word.
         ("API cos ", "API có "),
         ("CI car ", "CI cả "),
-        // A real English word still restores what is in front of it.
-        ("car the ", "car the "),
+        // A real English word still restores what is in front of it, but
+        // never a top Vietnamese syllable ("cả").
+        ("car the ", "cả the "),
         ("this is a test ", "this is a test "),
         ("Hello how are you ", "Hello how are you "),
         // The acronym keeps its letters, the code identifier its keys.
@@ -303,6 +304,48 @@ fn vietnamese_punctuation_is_not_code() {
         ("tieengs: ", "tiếng: "),
         ("tieengs. ", "tiếng. "),
         ("nguowif ", "người "),
+    ] {
+        assert_eq!(type_telex(input), expected, "input: {input:?}");
+    }
+}
+
+#[test]
+fn top_vietnamese_words_survive_the_english_rules() {
+    // The rarity score comes from a word list, not a corpus, so the most
+    // common particles score as rare ("nó" 1, "vẻ" 7, "bú" 0). A render on
+    // the curated top-syllable list is a word Vietnamese speakers type: the
+    // English rules keep it unless the sentence really is English.
+    for (input, expected) in [
+        // A short particle as the previous word ("em", "to") is neutral, not
+        // English, so the next word keeps its marks.
+        ("em nos ", "em nó "),
+        ("em nos laf ver ", "em nó là vẻ "),
+        ("to nos ", "to nó "),
+        // A longer one ("anh") keeps the sentence Vietnamese.
+        ("anh nos ", "anh nó "),
+        // A score-0 reading ("bú") no longer flips everywhere.
+        ("bus ", "bú "),
+        ("em bus ", "em bú "),
+        // A top syllable is never restored by a later English word.
+        ("ver the ", "vẻ the "),
+        ("nos the ", "nó the "),
+        ("cos ver ok ", "có vẻ ok "),
+        // An acronym is no sentence-language signal ("cả CI/CD").
+        ("car CI/CD ", "cả CI/CD "),
+        // An English sentence still restores them.
+        ("the car ", "the car "),
+        ("the bus ", "the bus "),
+        ("my car is red ", "my car is red "),
+        ("I love this car ", "I love this car "),
+        ("it is the best car ", "it is the best car "),
+        // Nothing changes for the other English rules.
+        ("this is a test ", "this is a test "),
+        ("Hello how are you ", "Hello how are you "),
+        (
+            "a diff of the lossless pass ",
+            "a diff of the lossless pass ",
+        ),
+        ("what is best ", "what is best "),
     ] {
         assert_eq!(type_telex(input), expected, "input: {input:?}");
     }
