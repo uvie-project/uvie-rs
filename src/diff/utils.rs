@@ -326,6 +326,24 @@ impl UltraFastViEngine {
         n >= 2 && word[n - 1] == word[n - 2] && Self::is_tone_key_in_mode(word[n - 1], mode)
     }
 
+    /// True when a doubled tone key sits between the two halves of an `a…a`
+    /// circumflex attempt ("ra**ss**a", "ta**xx**a"). The pair is a failed
+    /// `aa` → `â`: `â` is an always-closed rhyme, so an open syllable can
+    /// never be Vietnamese intent. The cancel collapse is not what the user
+    /// meant, so the commit must restore the literal keystrokes.
+    ///
+    /// `ê` and `ô` (the `e…e` / `o…o` halves) are valid open rhymes, so those
+    /// keep the standard collapse ("toffo" → "tofo", "resse" → "rese").
+    #[inline]
+    pub(crate) fn cancelled_a_circumflex_pair(word: &[char], mode: &Mode) -> bool {
+        word.windows(4).any(|w| {
+            w[1] == w[2]
+                && Self::is_tone_key_in_mode(w[1].to_ascii_lowercase(), mode)
+                && w[0].eq_ignore_ascii_case(&'a')
+                && w[3].eq_ignore_ascii_case(&'a')
+        })
+    }
+
     /// True when the keystrokes typed after a dictionary word read as
     /// Vietnamese: rendered on their own, the tail carries at least one
     /// Vietnamese transform (a tone or vowel-quality mark). English

@@ -114,7 +114,13 @@ impl ToneHandler for UltraFastViEngine {
             if self.raw_len > 0 {
                 self.raw_len -= 1;
             }
-            self.buf.push(Syl::consonant(b, caps));
+            // The cancelling key is a LITERAL consonant for the rest of the
+            // word: the user asked for the letter, not the tone. Mark it so
+            // no later vowel merge or tone-key cleanup can re-read it as a
+            // tone key ("resse" stays "rese", "toffo" stays "tofo").
+            let mut cancelled = Syl::consonant(b, caps);
+            cancelled.flags |= F_LITERAL;
+            self.buf.push(cancelled);
             return;
         }
 

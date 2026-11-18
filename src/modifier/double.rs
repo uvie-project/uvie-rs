@@ -45,6 +45,12 @@ impl DoubleVowelLookup for UltraFastViEngine {
         let n = self.buf.len();
         for i in (0..n).rev() {
             let s = self.buf.get(i);
+            // A cancelled tone key is a literal consonant: the vowel on the
+            // other side of it is a separate letter, not the second half of a
+            // circumflex pair ("resse" → "rese", "toffo" → "tofo").
+            if s.flags & F_LITERAL != 0 && self.mode.classify[s.base as usize] & IS_TONE_KEY != 0 {
+                return None;
+            }
             if s.base == b && s.flags & F_LITERAL == 0 && s.flags & F_HORN == 0 {
                 return Some(i);
             }

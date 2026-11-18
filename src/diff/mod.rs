@@ -1181,9 +1181,12 @@ impl UltraFastViEngine {
             return false;
         }
         // Plain-letter differences come from intentional double-key cancels
-        // ("masster" → "master", "off" → "of") — those must stay.
+        // ("masster" → "master", "off" → "of") — those must stay. The one
+        // exception is a cancelled tone key between two `a` halves: that pair
+        // was a failed `aa` → `â`, and an open `â` syllable is never a
+        // Vietnamese word, so the literal keystrokes win ("rassa", "taxxa").
         if screen.is_ascii() {
-            return false;
+            return Self::cancelled_a_circumflex_pair(&self.diff.word_raw, self.mode);
         }
         // A V-C-V split inside this token glued several syllables together,
         // which a single Vietnamese word never is.

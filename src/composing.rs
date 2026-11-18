@@ -85,7 +85,10 @@ impl UltraFastViEngine {
         let Some(tone_syl) = self.buf.pop() else {
             return;
         };
-        if tone_syl.base != tone_key || tone_syl.flags & F_TONE_SET != 0 {
+        if tone_syl.base != tone_key
+            || tone_syl.flags & F_TONE_SET != 0
+            || tone_syl.flags & F_LITERAL != 0
+        {
             self.buf.push(tone_syl);
             return;
         }
@@ -133,6 +136,7 @@ impl UltraFastViEngine {
         for i in (target_idx + 1)..n {
             let syl = self.buf.get(i);
             if syl.flags & F_TONE_SET == 0
+                && syl.flags & F_LITERAL == 0
                 && self.mode.classify[syl.base as usize] & IS_TONE_KEY != 0
             {
                 tone_idx = Some(i);
@@ -186,6 +190,7 @@ impl UltraFastViEngine {
         for i in coda_start..n {
             let syl = self.buf.get(i);
             if syl.flags & F_TONE_SET == 0
+                && syl.flags & F_LITERAL == 0
                 && self.mode.classify[syl.base as usize] & IS_TONE_KEY != 0
             {
                 tone_idx = Some(i);

@@ -428,11 +428,11 @@ fn no_bubble_across_consonants() {
     let mut e = UltraFastViEngine::new();
     assert_eq!(type_seq(&mut e, "banana"), "banana");
 
-    // resset: double-s cancels tone, but then e+s+e forms circumflex ê
-    // with the sắc tone from the second s → "rết" (valid Vietnamese syllable).
-    // This is expected behavior: 's' is a Telex tone key, so e+s+e → ế.
+    // resset: the second s cancels the sắc, so that key is a LITERAL s for
+    // the rest of the word: e+s+e must not bubble into ê and re-read it as a
+    // tone key → "reset" (the double-key cancel collapses to one s).
     let mut e = UltraFastViEngine::new();
-    assert_eq!(type_seq(&mut e, "resset"), "rết");
+    assert_eq!(type_seq(&mut e, "resset"), "reset");
 
     // Free-style still works when only vowels/w separate: neues -> nếu
     let mut e = UltraFastViEngine::new();

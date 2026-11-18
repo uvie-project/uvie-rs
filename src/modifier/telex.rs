@@ -58,6 +58,7 @@ impl TelexModifier for UltraFastViEngine {
                 let has_coda_tone = (coda_start..self.buf.len()).any(|j| {
                     let s = self.buf.get(j);
                     s.flags & crate::syllable::F_TONE_SET == 0
+                        && s.flags & crate::syllable::F_LITERAL == 0
                         && self.mode.classify[s.base as usize] & crate::modes::IS_TONE_KEY != 0
                 });
                 if has_coda_tone {

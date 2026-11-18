@@ -85,8 +85,10 @@ fn locked_vcv_behavior_unchanged() {
         ("neeboo", "nêbô"),
         ("naabo", "nâbo"),
         ("toocaa", "tôcâ"),
-        ("vesset", "vết"), // double-s cancel + cross-tone, single syllable
-        ("befe", "bề"),    // cross-tone circumflex
+        // double-s cancel: the cancelled s is a literal consonant, so
+        // e+s+e must not bubble into ê with the sắc.
+        ("vesset", "veset"),
+        ("befe", "bề"), // cross-tone circumflex
     ];
     for (input, expected) in cases {
         let mut e = UltraFastViEngine::new();
