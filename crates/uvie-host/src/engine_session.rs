@@ -89,6 +89,15 @@ impl EngineSession {
         (bs, s.to_owned())
     }
 
+    /// Word boundary reached at the separator key `boundary` (the char that
+    /// ends the word: space, punctuation, Enter). The char decides the
+    /// code-identifier rule (`feed_diff`, `raw_chars`, `UVIE_RS_DIR`).
+    /// Returns `(backspaces, suffix)`.
+    pub fn commit_with(&mut self, boundary: char) -> (usize, String) {
+        let (bs, s) = self.engine.commit_with_boundary_diff(boundary);
+        (bs, s.to_owned())
+    }
+
     /// LabanKey-style post-commit edit: user moved the caret back onto a
     /// committed word and typed `ch`. `caret_back` is the caret distance back
     /// to the end of the newest committed word.
@@ -112,9 +121,10 @@ impl EngineSession {
     }
 
     /// A separator char (space / punctuation / Enter) was typed right after
-    /// the newest committed word.
-    pub fn note_separator(&mut self) {
-        self.engine.note_separator();
+    /// the newest committed word. A code char glued to the text before it
+    /// (`_` in `foo_bar`, `.` in `a.b`) marks the next word as code.
+    pub fn note_separator(&mut self, ch: char) {
+        self.engine.note_separator(ch);
     }
 
     /// A separator char right after the newest committed word was deleted.

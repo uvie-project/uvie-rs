@@ -85,7 +85,7 @@ impl Screen {
         self.anchor = self.caret - 1;
         // The host posts the space natively and reports it as a separator, so
         // the engine's caret geometry knows about it.
-        self.engine.note_separator();
+        self.engine.note_separator(' ');
     }
 
     /// Arrow-left: the caret steps back 1 char (the engine is not involved).

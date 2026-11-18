@@ -9,7 +9,7 @@ mod utils;
 
 pub use state::{ComposingSnapshot, DiffState, EnglishFallback};
 
-use crate::buffers::{CharVec, OutBuffer};
+use crate::buffers::{CharVec, OutBuffer, StackStr};
 use crate::engine::UltraFastViEngine;
 use crate::modes::InputMethod;
 use state::CommittedWord;
@@ -21,6 +21,65 @@ enum CaretHit {
     /// Strictly inside ring entry `step`, `chars_before` rendered chars left
     /// of the caret.
     MidWord(usize, usize),
+}
+
+/// How the previous committed word reads on screen, for the ambiguous-English
+/// rule: "English" and "Neutral" let an English word through, "Vietnamese"
+/// keeps the sentence Vietnamese.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PrevWordKind {
+    English,
+    Neutral,
+    Vietnamese,
+}
+
+/// Separator chars that only appear inside code: a word glued right after one
+/// of them (`feed_diff`, `x=1`, `a\b`) is an identifier, not Vietnamese. A
+/// `.` counts too, but only when it is glued as well (`a.b`, not "test. Next").
+/// Brackets, `#`, `<>` and `|` are left out: Vietnamese text uses them
+/// (`[học]`, `#việtnam`, `<ghi chú>`).
+const CODE_GLUE_CHARS: [char; 7] = ['_', '`', '=', '\\', '@', '$', '.'];
+
+/// Separator chars that END a code identifier: the word before one of them
+/// shows its literal keystrokes (`raw_chars`, `feed_diff`, `UVIE_RS_DIR`).
+/// `(` `/` `-` `:` `,` and a terminating `.` are normal Vietnamese
+/// punctuation and are deliberately absent.
+const CODE_END_CHARS: [char; 5] = ['_', '`', '=', '\\', '@'];
+
+/// The separator char starts a code identifier when it is glued to the text
+/// on its left (`foo_bar`, `a.b`).
+fn is_code_glue_char(ch: char) -> bool {
+    CODE_GLUE_CHARS.contains(&ch)
+}
+
+/// The separator char terminates a code identifier (`raw_chars`).
+fn is_code_end_char(ch: char) -> bool {
+    CODE_END_CHARS.contains(&ch)
+}
+
+/// A Vietnamese vowel, toned or not ("Ỉ", "É", "a").
+fn is_vowel_char(c: char) -> bool {
+    let lower = c.to_lowercase().next().unwrap_or(c);
+    VOWEL_FORMS.iter().any(|&(form, _, _)| {
+        (0..=5u8).any(|tone| crate::tone::map_vowel_with_tone(form, tone) == lower)
+    })
+}
+
+/// Number of vowel groups in `s` — 1 for a single syllable's nucleus.
+fn vowel_runs(s: &str) -> usize {
+    let mut runs = 0usize;
+    let mut in_run = false;
+    for c in s.chars() {
+        if is_vowel_char(c) {
+            if !in_run {
+                runs += 1;
+                in_run = true;
+            }
+        } else {
+            in_run = false;
+        }
+    }
+    runs
 }
 
 /// Vietnamese modifier a base letter can carry (canonical keystroke forms).
@@ -149,8 +208,8 @@ impl Diffable for UltraFastViEngine {
         // through. The committed-word ring survives — punctuation typed mid
         // sentence must not destroy the post-commit edit history.
         if Self::is_word_boundary(ch) {
-            let (bs, _) = self.commit_diff();
-            self.note_separator();
+            let (bs, _) = self.commit_with_boundary_diff(ch);
+            self.diff.note_separator(ch);
             let _ = self.diff.diff_suffix.push(ch);
             return (bs, &self.diff.diff_suffix);
         }
@@ -235,6 +294,13 @@ impl Diffable for UltraFastViEngine {
         // Append to key_log and word_raw, then run the core pipeline.
         let _ = self.diff.key_log.try_push(ch);
         let _ = self.diff.word_raw.try_push(ch);
+        // First keystroke of the word: remember whether it started right
+        // after a code char glued to the text before it (`feed_diff`,
+        // `a.b`) — the whole token is an identifier then, not Vietnamese.
+        if self.diff.word_raw.len() == 1 {
+            self.diff.word_after_code =
+                self.diff.last_sep_glued && is_code_glue_char(self.diff.last_sep);
+        }
         // Only save pre-keystroke screen state if the dictionary override
         // could possibly fire (word_raw >= 4 chars, the minimum dict word).
         // This avoids 256 bytes of clones on the common path.
@@ -473,92 +539,7 @@ impl Diffable for UltraFastViEngine {
     }
 
     fn commit_diff(&mut self) -> (usize, &str) {
-        // Nothing composing: there is no word to record. An idle commit (a
-        // boundary key pressed after punctuation or a second Space) must not
-        // push an empty "phantom" entry — the host measures its caret offset
-        // from the real word, so a phantom would shift the geometry by one.
-        if self.diff.word_raw.is_empty() && !self.is_composing_diff() {
-            self.diff.diff_suffix.clear();
-            return (0, &self.diff.diff_suffix);
-        }
-
-        // English dictionary override: if the full word matches a known
-        // English word, replace the Vietnamese transform with the raw English
-        // word. The diff engine computes the backspaces needed to transform
-        // what's on screen (diff_committed + prev_rendered) into the raw word.
-        if self.enable_english_override
-            && !self.diff.word_raw.is_empty()
-            && crate::tables::is_english_override(&self.diff.word_raw)
-        {
-            return self.commit_restoring_raw();
-        }
-
-        // Restore-raw rule (LabanKey): a finished token that is not a valid
-        // Vietnamese word shows the literal keystrokes instead of the marks
-        // the pipeline applied to it ("law" → "lă", "after" → "àtẻ"). Same
-        // toggle as the dictionary — the host's "restore English" setting.
-        if self.enable_english_override
-            && !self.diff.word_raw.is_empty()
-            && !self.diff.word_raw_overflowed
-            && self.should_restore_raw_on_commit()
-        {
-            return self.commit_restoring_raw();
-        }
-
-        // Sentence-context English rule: a common English word that renders
-        // as a valid Vietnamese syllable in isolation ("how" → "hơ",
-        // "best" → "bét") is restored when the previous committed word is
-        // clearly English ("Hello, how are you?"). Vietnamese context never
-        // qualifies, so Vietnamese typing is unaffected.
-        if self.enable_english_override
-            && !self.diff.word_raw.is_empty()
-            && !self.diff.word_raw_overflowed
-            && self.should_restore_context_english()
-        {
-            return self.commit_restoring_raw();
-        }
-
-        // Capture the word for post-commit editing before the clears wipe
-        // the buffers: raw keystrokes + the exact text on screen (V-C-V
-        // committed prefix + composing render).
-        let entry_raw = self.diff.word_raw.clone();
-        let mut entry_rendered = crate::buffers::new_out_buffer();
-        let _ = entry_rendered.push_str(&self.diff.diff_committed);
-        let _ = entry_rendered.push_str(&self.diff.prev_rendered);
-
-        self.buf.clear();
-        self.raw_len = 0;
-        self.pending_tone = None;
-        self.out_buf.clear();
-        self.committed.clear();
-        self.syl_structure.clear();
-        self.diff.raw_chars.clear();
-        self.diff.key_log.clear();
-        self.diff.word_raw.clear();
-        self.diff.prev_rendered.clear();
-        self.diff.prev_inner_render.clear();
-        self.diff.last_valid_raw_len = 0;
-        self.diff.last_valid_coda_start = 0;
-        self.diff.last_valid_out.clear();
-        // A word has just been finalised: the V-C-V auto-committed portion of
-        // this word must not survive into the next word, otherwise it leaks onto
-        // the following word as ghost characters and corrupts macro matching.
-        self.diff.diff_committed.clear();
-        self.diff.diff_suffix.clear();
-        self.diff.word_raw_overflowed = false;
-        self.diff.english_sticky = false;
-        self.diff.english_fallback = None;
-        // Clear the snapshot stack — stale snapshots from the committed word
-        // must not survive, otherwise a backspace after commit would restore
-        // state from the previous word, corrupting the engine.
-        for s in &mut self.diff.snapshots {
-            *s = None;
-        }
-        self.diff.snapshot_count = 0;
-        // Record the word now that the clears are done (push_committed must
-        // not be wiped by the diff-state clear above).
-        self.diff.push_committed(entry_raw, entry_rendered);
-        (0, &self.diff.diff_suffix)
+        self.commit_with_boundary_diff('\0')
     }
 
     fn edit_at_caret_diff(&mut self, caret_back: usize, ch: char) -> Option<(usize, usize, &str)> {
@@ -706,6 +687,8 @@ impl Diffable for UltraFastViEngine {
         // committed text, syl_structure, or cached partition surviving.
         self.clear();
         self.diff.clear();
+        // The separator history describes text the engine no longer tracks.
+        self.diff.clear_separator();
     }
 
     fn is_composing_diff(&self) -> bool {
@@ -733,11 +716,138 @@ impl Diffable for UltraFastViEngine {
 }
 
 impl UltraFastViEngine {
+    /// Commit the composing word at `boundary` — the separator key that ended
+    /// it (`' '`, `'.'`, `'_'`, `'\n'`, ...; `'\0'` when the host has no char).
+    /// Returns the minimal edit (backspaces, suffix) that replaces the
+    /// Vietnamese transform with the word the user meant.
+    ///
+    /// The rules, in order (all gated by `set_english_override`):
+    /// 1. dictionary — a known English word;
+    /// 2. code identifier / doubled tone key / ALL-CAPS acronym — the raw
+    ///    keystrokes are decisive whatever the context;
+    /// 3. restore-raw — the render cannot be a Vietnamese word;
+    /// 4. ambiguous English word — the Vietnamese rarity score plus the
+    ///    previous word decide ("how" after "Hello" is English, "hơ" after
+    ///    "các" is Vietnamese).
+    ///
+    /// Whenever the word ends up English, older ambiguous words separated by
+    /// a single char are restored too ("this is a test" must not stay
+    /// "thí í a tét"), and the returned plan rewrites that whole span.
+    pub fn commit_with_boundary_diff(&mut self, boundary: char) -> (usize, &str) {
+        // Nothing composing: there is no word to record. An idle commit (a
+        // boundary key pressed after punctuation or a second Space) must not
+        // push an empty "phantom" entry — the host measures its caret offset
+        // from the real word, so a phantom would shift the geometry by one.
+        if self.diff.word_raw.is_empty() && !self.is_composing_diff() {
+            self.diff.diff_suffix.clear();
+            return (0, &self.diff.diff_suffix);
+        }
+
+        let gate = self.enable_english_override && !self.diff.word_raw.is_empty();
+
+        // English dictionary override: if the full word matches a known
+        // English word, replace the Vietnamese transform with the raw English
+        // word. The diff engine computes the backspaces needed to transform
+        // what's on screen (diff_committed + prev_rendered) into the raw word.
+        if gate && crate::tables::is_english_override(&self.diff.word_raw) {
+            return self.commit_restoring_raw();
+        }
+
+        // Raw-keystroke rules: a code identifier, an English word whose
+        // doubled Telex tone key the cancel sequence collapsed ("off" →
+        // "of"), an ALL-CAPS acronym the pipeline read as a rare syllable
+        // ("JIRA" → "JỈA"). None of them depends on the sentence context.
+        // A word that outgrew the raw buffer only knows its tail, so the
+        // restore would rewrite text the raw no longer covers: skip it.
+        if gate
+            && !self.diff.word_raw_overflowed
+            && self.should_restore_code_or_english_token(boundary)
+        {
+            return self.commit_restoring_raw();
+        }
+
+        // Restore-raw rule (LabanKey): a finished token that is not a valid
+        // Vietnamese word shows the literal keystrokes instead of the marks
+        // the pipeline applied to it ("law" → "lă", "after" → "àtẻ"). Same
+        // toggle as the dictionary — the host's "restore English" setting.
+        if gate && !self.diff.word_raw_overflowed && self.should_restore_raw_on_commit() {
+            return self.commit_restoring_raw();
+        }
+
+        // Ambiguous English word: a common English word that renders as a
+        // valid Vietnamese syllable in isolation ("how" → "hơ", "best" →
+        // "bét") is restored when its Vietnamese reading is rare or the
+        // previous committed word is English. Vietnamese context never
+        // qualifies, so Vietnamese typing is unaffected.
+        if gate && !self.diff.word_raw_overflowed && self.should_restore_ambiguous_english() {
+            return self.commit_restoring_raw();
+        }
+
+        // Capture the word for post-commit editing before the clears wipe
+        // the buffers: raw keystrokes + the exact text on screen (V-C-V
+        // committed prefix + composing render).
+        let entry_raw = self.diff.word_raw.clone();
+        let mut entry_rendered = crate::buffers::new_out_buffer();
+        let _ = entry_rendered.push_str(&self.diff.diff_committed);
+        let _ = entry_rendered.push_str(&self.diff.prev_rendered);
+        // A plainly-typed English word needs no restore, but it still proves
+        // the sentence is English: older ambiguous words may be restored. A
+        // word that outgrew the raw buffer only knows its tail — skip it.
+        let plain_english =
+            gate && !self.diff.word_raw_overflowed && self.word_is_plain_english(&entry_rendered);
+
+        self.buf.clear();
+        self.raw_len = 0;
+        self.pending_tone = None;
+        self.out_buf.clear();
+        self.committed.clear();
+        self.syl_structure.clear();
+        self.diff.raw_chars.clear();
+        self.diff.key_log.clear();
+        self.diff.word_raw.clear();
+        self.diff.prev_rendered.clear();
+        self.diff.prev_inner_render.clear();
+        self.diff.last_valid_raw_len = 0;
+        self.diff.last_valid_coda_start = 0;
+        self.diff.last_valid_out.clear();
+        // A word has just been finalised: the V-C-V auto-committed portion of
+        // this word must not survive into the next word, otherwise it leaks onto
+        // the following word as ghost characters and corrupts macro matching.
+        self.diff.diff_committed.clear();
+        self.diff.diff_suffix.clear();
+        self.diff.word_raw_overflowed = false;
+        self.diff.english_sticky = false;
+        self.diff.english_fallback = None;
+        // Clear the snapshot stack — stale snapshots from the committed word
+        // must not survive, otherwise a backspace after commit would restore
+        // state from the previous word, corrupting the engine.
+        for s in &mut self.diff.snapshots {
+            *s = None;
+        }
+        self.diff.snapshot_count = 0;
+        // The word stays on screen as typed: only the older words can need a
+        // rewrite, and the ring must not contain the current word yet.
+        let retro = if plain_english {
+            self.retro_restore_english(&entry_rendered, &entry_rendered)
+        } else {
+            None
+        };
+        // Record the word now that the clears are done (push_committed must
+        // not be wiped by the diff-state clear above).
+        self.diff.push_committed(entry_raw, entry_rendered);
+        (retro.unwrap_or(0), &self.diff.diff_suffix)
+    }
+
     /// A separator char (space / punctuation / Enter) was typed right after
     /// the newest committed word: grow its on-screen gap. No-op while nothing
     /// is committed.
-    pub fn note_separator(&mut self) {
-        self.diff.note_separator();
+    ///
+    /// The char itself matters: a code char glued to the text before it
+    /// (`_` in `foo_bar`, `.` in `a.b`) makes the next word a code
+    /// identifier, and the retroactive English fix needs the exact separator
+    /// between two words.
+    pub fn note_separator(&mut self, ch: char) {
+        self.diff.note_separator(ch);
     }
 
     /// A separator char right after the newest committed word was deleted.
@@ -987,7 +1097,10 @@ impl UltraFastViEngine {
     /// `word_raw`, clear every bit of composing state, and record the word for
     /// post-commit editing with rendered == raw (so an edit re-renders
     /// raw + key from scratch). Shared by the English dictionary override and
-    /// the restore-raw rule.
+    /// every restore rule.
+    ///
+    /// The word is English, so the ambiguous words in front of it are too:
+    /// the retroactive fix rewrites the span from the oldest restored word.
     fn commit_restoring_raw(&mut self) -> (usize, &str) {
         // Build full on-screen text (Vietnamese) in a stack buffer.
         let mut full_screen = crate::buffers::new_out_buffer();
@@ -1002,6 +1115,9 @@ impl UltraFastViEngine {
 
         // Capture the raw keystrokes BEFORE the clears wipe word_raw.
         let entry_raw = self.diff.word_raw.clone();
+        // A word that outgrew the raw buffer only knows its tail, so the
+        // span the retroactive fix would rebuild is incomplete: skip it.
+        let overflowed = self.diff.word_raw_overflowed;
 
         // Clear all state.
         self.buf.clear();
@@ -1020,13 +1136,26 @@ impl UltraFastViEngine {
         self.diff.edit_history_start = ring_start;
         self.diff.edit_history_len = ring_len;
 
+        // The ring still holds the older words and not this one: restore the
+        // ambiguous ones the English word proves were English too.
+        let retro = if overflowed {
+            None
+        } else {
+            self.retro_restore_english(&full_screen, &target)
+        };
+
         // Record the word for post-commit editing: on screen it is the raw
         // keystrokes (the transform was replaced).
         self.diff.push_committed(entry_raw, target.clone());
 
-        // Diff from full_screen → target, writing suffix into diff_suffix.
-        let (bs, _) = Self::diff_into(&full_screen, &target, &mut self.diff.diff_suffix);
-        (bs, &self.diff.diff_suffix)
+        match retro {
+            Some(bs) => (bs, &self.diff.diff_suffix),
+            None => {
+                // Diff from full_screen → target, writing suffix into diff_suffix.
+                let (bs, _) = Self::diff_into(&full_screen, &target, &mut self.diff.diff_suffix);
+                (bs, &self.diff.diff_suffix)
+            }
+        }
     }
 
     /// Word-boundary restore-raw rule: `true` when the finished token is not a
@@ -1064,13 +1193,135 @@ impl UltraFastViEngine {
         crate::restore::rendered_syllable_needs_restore(&self.diff.prev_rendered)
     }
 
-    /// Sentence-context English rule: `true` when the finished token is a
-    /// common English word that the pipeline marked as Vietnamese AND the
-    /// previous committed word is clearly English ("Hello, how are you?" —
-    /// "how" → "hơ"). Restored words are recorded with rendered == raw, so
-    /// the context chains: the dictionary restores "soon", which lets the
-    /// second "as" in "as soon as possible" see an English previous word.
-    fn should_restore_context_english(&self) -> bool {
+    /// Raw-keystroke rules — decisive whatever the sentence context is:
+    ///
+    /// - a code identifier: the word starts right after a code char glued to
+    ///   the text before it (`feed_diff`, `a.b`) or the boundary char ends it
+    ///   (`raw_chars`). `(` `/` `-` `:` `,` and a terminating `.` are normal
+    ///   Vietnamese punctuation and never trigger;
+    /// - an English word with a doubled Telex tone key ("off", "diff",
+    ///   "lossless"): the second key is the cancel sequence, so the render
+    ///   lost a letter;
+    /// - an ALL-CAPS acronym whose render is a rare Vietnamese syllable
+    ///   ("JIRA" → "JỈA").
+    fn should_restore_code_or_english_token(&self, boundary: char) -> bool {
+        if self.diff.word_after_code || is_code_end_char(boundary) {
+            return true;
+        }
+        if crate::tables::is_english_doubled_key_word(&self.diff.word_raw) {
+            return true;
+        }
+        self.should_restore_acronym()
+    }
+
+    /// ALL-CAPS acronym rule: 2..=5 uppercase ASCII letters whose render is
+    /// ONE syllable the Vietnamese word list barely uses ("JIRA" → "JỈA",
+    /// "DESC" → "DÉC") is English. A common syllable keeps the word
+    /// Vietnamese ("VIEETJ" renders "VIỆT").
+    fn should_restore_acronym(&self) -> bool {
+        let raw = &self.diff.word_raw;
+        if !(2..=5).contains(&raw.len()) || !raw.iter().all(|c| c.is_ascii_uppercase()) {
+            return false;
+        }
+        // A V-C-V split means the render is two syllables, not an acronym's
+        // Vietnamese reading.
+        if !self.diff.diff_committed.is_empty() {
+            return false;
+        }
+        let rendered = &self.diff.prev_rendered;
+        // Already literal — nothing to restore. A shorter render is normal
+        // (the acronym's tone key is consumed: "JIRA" renders "JỈA").
+        if rendered.chars().count() == raw.len()
+            && rendered.chars().zip(raw.iter()).all(|(a, &b)| a == b)
+        {
+            return false;
+        }
+        if !rendered.chars().all(|c| c.is_alphabetic()) || vowel_runs(rendered) != 1 {
+            return false;
+        }
+        !crate::tables::is_common_vietnamese_syllable(rendered)
+    }
+
+    /// The finished token is English even though it needed no restore: it is
+    /// already on screen as typed, and it is a context word, a dictionary
+    /// word, an ambiguous English word or a doubled-key word.
+    fn word_is_plain_english(&self, screen: &str) -> bool {
+        let mut raw = crate::buffers::new_out_buffer();
+        for &c in self.diff.word_raw.iter() {
+            let _ = raw.push(c);
+        }
+        if screen != &*raw {
+            return false;
+        }
+        crate::tables::is_english_context_word(screen)
+            || crate::tables::is_english_override(&self.diff.word_raw)
+            || crate::tables::is_english_ambiguous_word(&self.diff.word_raw)
+            || crate::tables::is_english_doubled_key_word(&self.diff.word_raw)
+    }
+
+    /// How the newest committed word reads on screen — the sentence context
+    /// the ambiguous-English rule judges.
+    fn prev_word_kind(&self, prev: &CommittedWord) -> PrevWordKind {
+        // A Vietnamese word on screen carries marks or đ; an ASCII word is
+        // either English or a plain Vietnamese token.
+        if !prev
+            .rendered
+            .chars()
+            .all(|c| c.is_ascii_alphabetic() || c == '\'')
+        {
+            return PrevWordKind::Vietnamese;
+        }
+        // Restored words are on screen as typed.
+        if prev.raw.len() != prev.rendered.chars().count()
+            || !prev
+                .raw
+                .iter()
+                .zip(prev.rendered.chars())
+                .all(|(&a, b)| a == b)
+        {
+            return PrevWordKind::Vietnamese;
+        }
+        if crate::tables::is_english_context_word(&prev.rendered) {
+            return PrevWordKind::English;
+        }
+        let mut chars = crate::buffers::CharVec::<24>::new();
+        for c in prev.rendered.chars() {
+            if !chars.try_push(c) {
+                return PrevWordKind::Vietnamese;
+            }
+        }
+        // A word this rule (or the dictionary) already restored to raw keeps
+        // the chain going: "what is best" — "is" was restored, so "best" is.
+        if crate::tables::is_english_override(&chars)
+            || crate::tables::is_english_ambiguous_word(&chars)
+            || crate::tables::is_english_doubled_key_word(&chars)
+        {
+            return PrevWordKind::English;
+        }
+        // A real Vietnamese token keeps the sentence Vietnamese ("than" after
+        // "các"), and so does a curated loanword ("file lát", "ok rét").
+        // Short function words ("a", "to") are neutral: they are just as
+        // likely to be English.
+        if prev.rendered.chars().count() > 2
+            && crate::tables::is_common_vietnamese_syllable(&prev.rendered)
+        {
+            return PrevWordKind::Vietnamese;
+        }
+        if crate::tables::is_vietnamese_loanword(&prev.rendered) {
+            return PrevWordKind::Vietnamese;
+        }
+        PrevWordKind::Neutral
+    }
+
+    /// Ambiguous English rule: the finished token is a common English word
+    /// whose render is a marked Vietnamese-looking token ("how" → "hơ",
+    /// "best" → "bét", "is" → "í"). The Vietnamese rarity score of the render
+    /// decides: a reading the word list never contains (pẻ, ák) is English
+    /// everywhere, a reading it barely uses (score <= 5: tét, sê, uế) wins
+    /// after a neutral word, and every other one needs an English previous
+    /// word. With no previous word at all the word keeps its Vietnamese
+    /// reading — the retroactive fix restores it once an English word commits.
+    fn should_restore_ambiguous_english(&self) -> bool {
         // Sticky English passthrough already shows the word raw.
         if self.diff.english_sticky {
             return false;
@@ -1083,44 +1334,114 @@ impl UltraFastViEngine {
         if screen.is_ascii() {
             return false;
         }
-        // The raw keystrokes must be a common English word.
-        if !crate::tables::is_english_ambiguous_word(&self.diff.word_raw) {
-            return false;
-        }
-        // The previous committed word must be on screen as typed, plain
-        // ASCII English: a Vietnamese word ("các", "trời") never qualifies.
-        let Some(prev) = self.diff.newest_committed() else {
+        let Some(score) = crate::tables::english_ambiguous_score(&self.diff.word_raw) else {
             return false;
         };
-        if !prev
-            .rendered
-            .chars()
-            .all(|c| c.is_ascii_alphabetic() || c == '\'')
-        {
-            return false;
-        }
-        if prev.raw.len() != prev.rendered.chars().count()
-            || !prev
-                .raw
-                .iter()
-                .zip(prev.rendered.chars())
-                .all(|(&a, b)| a == b)
-        {
-            return false;
-        }
-        if crate::tables::is_english_context_word(&prev.rendered) {
+        // A render the Vietnamese word list never contains (pẻ, ák) is not a
+        // Vietnamese word at all: the English reading wins everywhere.
+        if score == 0 {
             return true;
         }
-        // Longer English words ("soon", "more") come from the dictionary.
-        let mut chars = crate::buffers::CharVec::<24>::new();
-        for c in prev.rendered.chars() {
-            if !chars.try_push(c) {
-                return false;
+        match self.diff.newest_committed() {
+            // Nothing committed yet (a sentence start, or a fresh line): the
+            // word stands alone with no context to judge it, so it keeps its
+            // Vietnamese reading. A later English word restores it.
+            None => false,
+            Some(prev) => match self.prev_word_kind(prev) {
+                PrevWordKind::English => true,
+                PrevWordKind::Neutral => score <= 5,
+                PrevWordKind::Vietnamese => false,
+            },
+        }
+    }
+
+    /// Retroactive English fix. The word being committed is English, so the
+    /// older words in front of it were English too: walk back over at most 3
+    /// ring entries that a single separator char follows (`gap == 1`),
+    /// skipping neutral ASCII words ("a"), and restore the ambiguous ones
+    /// whose render the pipeline marked ("thí" → "this", "í" → "is"). The
+    /// walk stops at the first entry that is neither.
+    ///
+    /// `current_old` is the current word's text on screen and `current_new`
+    /// the text it commits as (they differ only when the word is restored).
+    /// Returns the backspaces that erase the span from the oldest restored
+    /// word to the end of the current word, with the corrected span text
+    /// written to `diff_suffix`; the restored entries are updated in place.
+    fn retro_restore_english(&mut self, current_old: &str, current_new: &str) -> Option<usize> {
+        // Older entries newest → oldest: rendered, raw, the separator char
+        // right after the word, and whether it must be restored.
+        let mut older: [Option<(OutBuffer, CharVec<24>, char)>; 3] = [const { None }; 3];
+        let mut restored = [false; 3];
+        let mut any = false;
+        let mut n = 0usize;
+        while n < older.len() {
+            let Some(entry) = self.diff.committed(n) else {
+                break;
+            };
+            if entry.gap != 1 {
+                break;
+            }
+            let restorable = entry.rendered.chars().count() != entry.raw.len()
+                || !entry
+                    .raw
+                    .iter()
+                    .zip(entry.rendered.chars())
+                    .all(|(&a, b)| a == b);
+            if restorable
+                && crate::tables::english_ambiguous_score(&entry.raw)
+                    .is_some_and(|score| score <= 25)
+            {
+                restored[n] = true;
+                any = true;
+            } else if self.prev_word_kind(entry) != PrevWordKind::Neutral {
+                break;
+            }
+            older[n] = Some((entry.rendered.clone(), entry.raw.clone(), entry.sep));
+            n += 1;
+        }
+        if !any {
+            return None;
+        }
+
+        // The span as it is on screen and as it must become. A span that does
+        // not fit the fixed buffer (three long words) is left alone: a
+        // truncated rewrite would corrupt the screen.
+        let mut old_span = StackStr::<256>::new();
+        let mut new_span = StackStr::<256>::new();
+        for step in (0..n).rev() {
+            let (rendered, raw, sep) = older[step].as_ref()?;
+            let mut ok = old_span.push_str(rendered);
+            if restored[step] {
+                for &c in raw.iter() {
+                    ok &= new_span.push(c);
+                }
+            } else {
+                ok &= new_span.push_str(rendered);
+            }
+            ok &= old_span.push(*sep);
+            ok &= new_span.push(*sep);
+            if !ok {
+                return None;
             }
         }
-        // A word this rule (or the dictionary) already restored to raw keeps
-        // the chain going: "what is best" — "is" was restored, so "best" is too.
-        crate::tables::is_english_override(&chars)
-            || crate::tables::is_english_ambiguous_word(&chars)
+        if !old_span.push_str(current_old) || !new_span.push_str(current_new) {
+            return None;
+        }
+        let (bs, _) = Self::diff_into(&old_span, &new_span, &mut self.diff.diff_suffix);
+
+        for (step, entry) in older.iter().enumerate().take(n) {
+            if !restored[step] {
+                continue;
+            }
+            let Some((_, raw, _)) = entry else { continue };
+            let mut rendered = crate::buffers::new_out_buffer();
+            for &c in raw.iter() {
+                let _ = rendered.push(c);
+            }
+            if let Some(entry) = self.diff.committed_mut(step) {
+                entry.rendered = rendered;
+            }
+        }
+        Some(bs)
     }
 }

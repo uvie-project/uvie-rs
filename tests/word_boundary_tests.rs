@@ -55,8 +55,10 @@ mod word_boundary_punctuation_tests {
     fn underscore_boundary() {
         let mut e = UltraFastViEngine::new();
         // `bee` → bê (ee→ê), then `f` is huyền tone → bề. The engine processes
-        // `bee` as a valid Vietnamese syllable; `test` also gets V-C-V split.
-        assert_eq!(type_diff(&mut e, "test_beef"), "tét_bề");
+        // `bee` as a valid Vietnamese syllable. The `_` ends `test` as a CODE
+        // identifier, so that word keeps its literal keystrokes ("tét" would
+        // be a Vietnamese reading of an identifier).
+        assert_eq!(type_diff(&mut e, "test_beef"), "test_bề");
     }
 
     #[test]

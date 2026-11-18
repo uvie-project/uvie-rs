@@ -256,6 +256,32 @@ pub extern "C" fn uvie_engine_commit(
     .unwrap_or(0)
 }
 
+/// Commit the current word at the separator key `boundary` that ended it
+/// (space, punctuation, Enter; `'\0'` when the host has no char).
+/// The boundary char decides the code-identifier rule: a word a code char
+/// terminates (`raw_chars`, `feed_diff`, `UVIE_RS_DIR`) shows its literal
+/// keystrokes. Returns backspace count, writes output into `out_buf`.
+#[unsafe(no_mangle)]
+pub extern "C" fn uvie_engine_commit_with(
+    engine: *mut UvieEngine,
+    boundary: c_char,
+    out_buf: *mut c_char,
+    out_len: usize,
+) -> usize {
+    std::panic::catch_unwind(|| {
+        if engine.is_null() || out_buf.is_null() || out_len == 0 {
+            return 0;
+        }
+        let Some(mut e) = lock_engine(engine) else {
+            return 0;
+        };
+        let (backspaces, suffix) = e.commit_with_boundary_diff(boundary as u8 as char);
+        write_output(suffix, out_buf, out_len);
+        backspaces
+    })
+    .unwrap_or(0)
+}
+
 /// Re-enter a previously committed word with `ch` appended to its raw
 /// keystrokes (LabanKey-style post-commit editing: the user arrows back
 /// onto a committed word and types a tone/modifier key).
@@ -323,11 +349,14 @@ pub extern "C" fn uvie_engine_delete_char_at(engine: *mut UvieEngine, caret_back
 
 /// Record a separator char (space / punctuation / Enter) typed right after the
 /// newest committed word. No-op while nothing is committed.
+///
+/// The char itself matters: a code char glued to the text before it (`_` in
+/// `foo_bar`, `.` in `a.b`) makes the next word a code identifier.
 #[unsafe(no_mangle)]
-pub extern "C" fn uvie_engine_note_separator(engine: *mut UvieEngine) {
+pub extern "C" fn uvie_engine_note_separator(engine: *mut UvieEngine, ch: c_char) {
     let _ = std::panic::catch_unwind(|| {
         if let Some(mut e) = lock_engine(engine) {
-            e.note_separator();
+            e.note_separator(ch as u8 as char);
         }
     });
 }

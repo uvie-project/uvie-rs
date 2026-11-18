@@ -25,14 +25,14 @@ fn separator_accounting() {
     let mut e = UltraFastViEngine::new();
     // No committed word: separators are not tracked.
     assert_eq!(e.trailing_gap(), 0);
-    e.note_separator();
+    e.note_separator(' ');
     assert_eq!(e.trailing_gap(), 0);
     assert!(!e.remove_separator());
 
     commit_word(&mut e, "ab", ' ');
     assert_eq!(e.trailing_gap(), 1);
-    e.note_separator();
-    e.note_separator();
+    e.note_separator(' ');
+    e.note_separator(' ');
     assert_eq!(e.trailing_gap(), 3);
     assert!(e.remove_separator());
     assert!(e.remove_separator());

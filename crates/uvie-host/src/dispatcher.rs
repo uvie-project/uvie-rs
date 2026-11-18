@@ -345,10 +345,10 @@ impl Dispatcher {
             }
         }
         let was_composing = self.session.is_composing();
-        let (bs, out) = self.session.commit();
+        let (bs, out) = self.session.commit_with(c);
         let mut plan = Vec::new();
         push_plan(&mut plan, bs, 0, &out);
-        self.after_word_break(was_composing);
+        self.after_word_break(was_composing, c);
         self.sentence.update_after(c);
         Dispatch::Pass(plan)
     }
@@ -360,10 +360,10 @@ impl Dispatcher {
             return Dispatch::Consume(plan);
         }
         let was_composing = self.session.is_composing();
-        let (bs, out) = self.session.commit();
+        let (bs, out) = self.session.commit_with('\n');
         let mut plan = Vec::new();
         push_plan(&mut plan, bs, 0, &out);
-        self.after_word_break(was_composing);
+        self.after_word_break(was_composing, '\n');
         self.sentence.on_enter();
         Dispatch::Pass(plan)
     }
@@ -373,16 +373,16 @@ impl Dispatcher {
     /// newest committed word grows its on-screen gap and the caret moves one
     /// right of it. When the caret is not at the end of the tracked separators
     /// (inside committed text, or an untracked spot) the history is dropped.
-    fn after_word_break(&mut self, was_composing: bool) {
+    fn after_word_break(&mut self, was_composing: bool, sep: char) {
         if was_composing {
             // The commit just recorded the word; the separator lands right
             // after it.
             self.caret_back = 0;
-            self.session.note_separator();
+            self.session.note_separator(sep);
             self.caret_back = -1;
         } else if self.caret_back <= 0 && self.caret_back == -(self.session.trailing_gap() as isize)
         {
-            self.session.note_separator();
+            self.session.note_separator(sep);
             self.caret_back -= 1;
         } else {
             self.reset();
@@ -468,10 +468,10 @@ impl Dispatcher {
             return Dispatch::Consume(plan);
         }
         let was_composing = self.session.is_composing();
-        let (bs, out) = self.session.commit();
+        let (bs, out) = self.session.commit_with('\0');
         let mut plan = Vec::new();
         push_plan(&mut plan, bs, 0, &out);
-        self.after_word_break(was_composing);
+        self.after_word_break(was_composing, '\0');
         Dispatch::Pass(plan)
     }
 

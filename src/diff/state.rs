@@ -37,6 +37,10 @@ pub struct CommittedWord {
     /// through `note_separator`/`remove_separator`; together with `rendered`
     /// they are the whole caret geometry (`caret_back` from the newest end).
     pub gap: usize,
+    /// The last separator char the host reported after this word. With
+    /// `gap == 1` it is the exact character between this word and the next
+    /// one, which the retroactive English fix needs to rebuild the span.
+    pub sep: char,
     /// `raw` still types `rendered`. Cleared when a native Backspace left a
     /// text whose canonical keystrokes do not render back to it (English
     /// "wa": a leading `w` is the ư modifier). A non-editable entry keeps its
@@ -139,6 +143,19 @@ pub struct DiffState {
     /// means the caret is right of the new newest word's end (the edited word
     /// was erased, leaving the caret inside the merged separators).
     pub last_edit_caret_back: isize,
+    /// The last separator char the host reported (`'\0'` when none yet). A
+    /// code char (`_`, '`', '=', ...) glued to the text before it — no space
+    /// in between — marks the next word as code, not Vietnamese.
+    pub last_sep: char,
+    /// That separator char was typed directly after the previous text (no
+    /// space before it): `foo_bar`, `a.b`, `x=1`.
+    pub last_sep_glued: bool,
+    /// A word was committed since the last separator: the next separator char
+    /// is glued to that word (`foo_`, `bar.`).
+    pub word_since_sep: bool,
+    /// The composing word started right after a glued code separator: it is a
+    /// code identifier and shows its literal keystrokes.
+    pub word_after_code: bool,
 }
 
 impl Default for DiffState {
@@ -171,6 +188,10 @@ impl DiffState {
             edit_history_start: 0,
             edit_history_len: 0,
             last_edit_caret_back: 0,
+            last_sep: '\0',
+            last_sep_glued: false,
+            word_since_sep: false,
+            word_after_code: false,
         }
     }
 
@@ -202,6 +223,17 @@ impl DiffState {
         self.edit_history_start = 0;
         self.edit_history_len = 0;
         self.last_edit_caret_back = 0;
+        // The separator history outlives a commit (the next separator is
+        // judged against the char before it), so only a full reset drops it.
+        self.word_since_sep = false;
+        self.word_after_code = false;
+    }
+
+    /// Drop the separator history (`last_sep` / glued state) — full reset
+    /// paths only, never an ordinary word commit.
+    pub fn clear_separator(&mut self) {
+        self.last_sep = '\0';
+        self.last_sep_glued = false;
     }
 
     /// Push a committed word onto the ring (oldest evicted when full).
@@ -218,9 +250,11 @@ impl DiffState {
             raw,
             rendered,
             gap: 0,
+            sep: '\0',
             editable: true,
         });
         self.edit_history_len += 1;
+        self.word_since_sep = true;
     }
 
     /// Ring slot of the entry at `step` (0 = newest, growing older).
@@ -254,10 +288,24 @@ impl DiffState {
 
     /// A separator char (space / punctuation / Enter) was typed right after
     /// the newest committed word. No-op while nothing is committed.
+    ///
+    /// The char itself is remembered: a code char glued to the text before it
+    /// (`foo_bar`, `a.b`) marks the next word as a code identifier, and the
+    /// retroactive English fix needs the exact separator between two words.
     #[inline]
-    pub(crate) fn note_separator(&mut self) {
+    pub(crate) fn note_separator(&mut self, ch: char) {
+        // A separator right after a committed word is glued to it (`_` in
+        // `foo_bar`); one that follows another separator is glued only when
+        // that separator was not a space (`,` `.` in "a,."). A separator
+        // after a space is normal punctuation (`(` in "foo (bar").
+        let glued =
+            self.word_since_sep || !matches!(self.last_sep, ' ' | '\t' | '\n' | '\r' | '\0');
+        self.last_sep = ch;
+        self.last_sep_glued = glued;
+        self.word_since_sep = false;
         if let Some(w) = self.committed_mut(0) {
             w.gap += 1;
+            w.sep = ch;
         }
     }
 

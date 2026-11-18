@@ -65,7 +65,7 @@ impl Host {
             self.caret += 1;
             self.anchor = self.caret - 1;
             // The space is posted natively: report it for the caret geometry.
-            self.engine.note_separator();
+            self.engine.note_separator(' ');
         }
         self.text.clone()
     }
@@ -145,7 +145,10 @@ fn keeps_vietnamese_words() {
         ("DDawsk Lawks ", "Đắk Lắk "),
         // Plain-letter differences are intentional double-key cancels.
         ("masster ", "master "),
-        ("off ", "of "),
+        // ... unless the raw keystrokes are a real English word: "off" is
+        // English, so the doubled `f` is not a cancel ("diff", "lossless").
+        ("off ", "off "),
+        ("masster off ", "master off "),
         ("hoaf ", "hoà "),
         ("khuyeens ", "khuyến "),
         ("giaf ", "già "),

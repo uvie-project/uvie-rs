@@ -57,6 +57,15 @@ size_t uvie_engine_backspace(UvieEngine *engine, char *out_buf, size_t out_len);
 size_t uvie_engine_commit(UvieEngine *engine, char *out_buf, size_t out_len);
 
 /**
+ * Commit the current word at the separator key `boundary` that ended it
+ * (space, punctuation, Enter; `'\0'` when the host has no char).
+ * The boundary char decides the code-identifier rule: a word a code char
+ * terminates (`raw_chars`, `feed_diff`, `UVIE_RS_DIR`) shows its literal
+ * keystrokes. Returns backspace count, writes output into `out_buf`.
+ */
+size_t uvie_engine_commit_with(UvieEngine *engine, char boundary, char *out_buf, size_t out_len);
+
+/**
  * Re-enter a previously committed word with `ch` appended to its raw
  * keystrokes (LabanKey-style post-commit editing: the user arrows back
  * onto a committed word and types a tone/modifier key).
@@ -93,8 +102,11 @@ int uvie_engine_delete_char_at(UvieEngine *engine, size_t caret_back);
 /**
  * Record a separator char (space / punctuation / Enter) typed right after the
  * newest committed word. No-op while nothing is committed.
+ *
+ * The char itself matters: a code char glued to the text before it (`_` in
+ * `foo_bar`, `.` in `a.b`) makes the next word a code identifier.
  */
-void uvie_engine_note_separator(UvieEngine *engine);
+void uvie_engine_note_separator(UvieEngine *engine, char ch);
 
 /**
  * Record that a separator char right after the newest committed word was
