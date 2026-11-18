@@ -115,14 +115,13 @@ fn main() {
         ("tieng  {{j", "tiệng|  "),
         // --- editing an OLDER word keeps the newer ones editable ---
         ("vieet nam {{{{{j}}}}}{j", "việt nạm| "),
-        // --- backspace re-opens a committed word ---
-        // "viee" re-renders through the commit rules, and an open "viê" is
-        // not a Vietnamese word, so the restore-raw rule keeps "vieej" (the
-        // same text a fresh "vieej" + Space would show).
+        // --- an idle Backspace is a native one-char delete ---
+        // "viêt" -> delete the space, delete 't' -> "viê"; the word stays
+        // editable, so 'j' tones it ("việ") and 't' restores it.
         ("vieet <<j", "việ|"),
         ("vieet <<tj", "việt|"),
-        // Backspace onto the word end undoes its last keystroke; retyping the
-        // same key re-renders the word ("hoc" + 'c' would be "hocc").
+        // ... and the same walk over any committed word ("hoc" -> "ho"),
+        // where retyping the deleted char re-renders the word.
         ("hoc <<c", "hoc|"),
         // --- plain word-end edits ---
         ("vieet {j", "việt| "),

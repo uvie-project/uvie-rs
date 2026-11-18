@@ -37,6 +37,12 @@ pub struct CommittedWord {
     /// through `note_separator`/`remove_separator`; together with `rendered`
     /// they are the whole caret geometry (`caret_back` from the newest end).
     pub gap: usize,
+    /// `raw` still types `rendered`. Cleared when a native Backspace left a
+    /// text whose canonical keystrokes do not render back to it (English
+    /// "wa": a leading `w` is the ư modifier). A non-editable entry keeps its
+    /// geometry but declines post-commit edits; native deletes keep shrinking
+    /// its rendered text.
+    pub editable: bool,
 }
 
 /// Pre-override Vietnamese pipeline state, saved when the English
@@ -212,6 +218,7 @@ impl DiffState {
             raw,
             rendered,
             gap: 0,
+            editable: true,
         });
         self.edit_history_len += 1;
     }

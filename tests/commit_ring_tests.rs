@@ -1,12 +1,13 @@
-//! Committed-word ring geometry, separator accounting and `backspace_at`.
+//! Committed-word ring geometry, separator accounting and `delete_char_at`.
 //!
 //! The host measures its caret offset (`caret_back`, screen chars) from the
 //! END of the NEWEST committed word. Every ring entry carries the separator
 //! chars that follow it on screen, so the word-end offsets are
 //! `end(0) = 0`, `end(k+1) = end(k) + rendered_len(k) + gap(k+1)`. These tests
 //! pin that geometry, the `note_separator`/`remove_separator` accounting and
-//! the in-place `edit_at`/`backspace_at` updates (no popping, no composing).
+//! the in-place `edit_at`/`delete_char_at` updates (no popping, no composing).
 
+use uvie::InputMethod;
 use uvie::UltraFastViEngine;
 use uvie::diff::Diffable;
 
@@ -141,35 +142,56 @@ fn boundary_chars_keep_the_ring() {
 }
 
 #[test]
-fn backspace_at_undoes_last_keystroke() {
+fn delete_char_at_shrinks_the_word_and_keeps_it_editable() {
     let mut e = UltraFastViEngine::new();
-    commit_word(&mut e, "viet", ' ');
-    let (bs, out) = e.backspace_at_caret_diff(0).expect("word end");
-    assert_eq!((bs, out), (1, ""), "viet -> vie");
+    commit_word(&mut e, "vieet", ' ');
+    // The host deleted the word's last visible char ('t') natively; the
+    // engine only tracks it, so the ring stays idle and in sync.
+    assert!(e.delete_char_at_caret(0));
     assert_eq!(e.last_caret_back_after_edit(), 0);
-    // The engine stays idle and the entry is updated in place: retyping the
-    // popped key restores the word.
     assert!(!e.is_composing_diff());
-    let (bs, fwd, out) = e.edit_at_caret_diff(0, 't').expect("edited word");
-    assert_eq!((bs, fwd), (0, 0));
-    assert_eq!(out, "t", "vie + t -> viet again");
+    // The shortened word is editable: its canonical raw ("viee") + 'j'
+    // renders "việ" — the tone rewrites the ê itself, so the plan erases the
+    // one rendered char and types the toned form.
+    let (bs, fwd, out) = e.edit_at_caret_diff(0, 'j').expect("edited word");
+    assert_eq!((bs, fwd), (1, 0));
+    assert_eq!(out, "ệ", "viê + j -> việ");
 
-    // Mid-word carets decline: there is no keystroke to undo there.
-    assert!(e.backspace_at_caret_diff(1).is_none());
+    // Mid-word carets decline: there is no word end to shrink there.
+    assert!(!e.delete_char_at_caret(1));
     // So does an empty ring.
     let mut empty = UltraFastViEngine::new();
-    assert!(empty.backspace_at_caret_diff(0).is_none());
+    assert!(!empty.delete_char_at_caret(0));
+    // And a composing word owns the caret — Backspace is the engine's job.
+    let mut composing = UltraFastViEngine::new();
+    let _ = composing.feed_diff('v');
+    assert!(!composing.delete_char_at_caret(0));
 }
 
 #[test]
-fn backspace_at_emptying_the_newest_word_merges_its_gap() {
+fn delete_char_at_keeps_the_offset_of_an_older_word() {
+    // "ab cd " — the caret sits at "ab"'s end (caret_back = len("cd") + gap =
+    // 3). The deleted char is LEFT of the caret, so the caret and the anchor
+    // both shift left: the offset is unchanged.
+    let mut e = UltraFastViEngine::new();
+    commit_word(&mut e, "ab", ' ');
+    commit_word(&mut e, "cd", ' ');
+    assert!(e.delete_char_at_caret(3));
+    assert_eq!(e.last_caret_back_after_edit(), 3);
+    // "ab" is now "a" at the same offset, and still editable.
+    let (bs, fwd, out) = e.edit_at_caret_diff(3, 's').expect("a's end");
+    assert_eq!((bs, fwd), (1, 0));
+    assert_eq!(out, "á");
+}
+
+#[test]
+fn delete_char_at_emptying_the_newest_word_merges_its_gap() {
     // "a b " — deleting the newest word leaves the caret inside the merged
     // separators, one right of the new newest word's end.
     let mut e = UltraFastViEngine::new();
     commit_word(&mut e, "a", ' ');
     commit_word(&mut e, "b", ' ');
-    let (bs, out) = e.backspace_at_caret_diff(0).expect("word end");
-    assert_eq!((bs, out), (1, ""), "the whole word is erased");
+    assert!(e.delete_char_at_caret(0));
     assert_eq!(
         e.last_caret_back_after_edit(),
         -1,
@@ -183,15 +205,14 @@ fn backspace_at_emptying_the_newest_word_merges_its_gap() {
 }
 
 #[test]
-fn backspace_at_emptying_an_older_word_keeps_the_offset() {
+fn delete_char_at_emptying_an_older_word_keeps_the_offset() {
     // "a b c " — erase the middle word; the caret keeps its absolute offset.
     let mut e = UltraFastViEngine::new();
     for word in ["a", "b", "c"] {
         commit_word(&mut e, word, ' ');
     }
     // end(1) = len("c") + gap("b") = 1 + 1 = 2.
-    let (bs, out) = e.backspace_at_caret_diff(2).expect("b's end");
-    assert_eq!((bs, out), (1, ""));
+    assert!(e.delete_char_at_caret(2));
     assert_eq!(e.last_caret_back_after_edit(), 2);
     assert_eq!(e.trailing_gap(), 1);
     // The surviving older word absorbed the removed gap: end(1) is now
@@ -202,11 +223,44 @@ fn backspace_at_emptying_an_older_word_keeps_the_offset() {
 }
 
 #[test]
+fn delete_char_at_tracks_non_editable_english_words() {
+    // "way" is on screen as typed; deleting 'y' leaves "wa", whose canonical
+    // keystrokes re-render as "ưa" (a leading `w` is the ư modifier). The
+    // entry keeps its geometry but declines edits, so a tone key is typed
+    // literally instead of re-rendering English input.
+    let mut e = UltraFastViEngine::new();
+    commit_word(&mut e, "way", ' ');
+    assert!(e.delete_char_at_caret(0), "\"way\" -> \"wa\"");
+    assert!(e.edit_at_caret_diff(0, 's').is_none(), "not editable");
+    assert!(e.delete_char_at_caret(0), "\"wa\" -> \"w\"");
+    assert!(e.edit_at_caret_diff(0, 's').is_none(), "still not editable");
+    // Erasing the word entirely drops the entry (and with it the only
+    // remaining gap: there is no older word to absorb it).
+    assert!(e.delete_char_at_caret(0));
+    assert_eq!(e.trailing_gap(), 0);
+    assert_eq!(e.last_caret_back_after_edit(), 0);
+    assert!(e.edit_at_caret_diff(0, 's').is_none(), "the ring is empty");
+}
+
+#[test]
+fn delete_char_at_rebuilds_vni_keystrokes() {
+    // VNI: "vie6t5" -> "việt". Deleting the coda leaves "việ", whose canonical
+    // raw is "vie6" + tone 5, and the word stays editable.
+    let mut e = UltraFastViEngine::new();
+    e.set_input_method(InputMethod::Vni);
+    commit_word(&mut e, "vie6t5", ' ');
+    assert!(e.delete_char_at_caret(0));
+    let (bs, fwd, out) = e.edit_at_caret_diff(0, 'n').expect("VNI word editable");
+    assert_eq!((bs, fwd), (0, 0));
+    assert_eq!(out, "n", "việ + n -> viện");
+}
+
+#[test]
 fn reset_clears_the_ring_and_the_gap() {
     let mut e = UltraFastViEngine::new();
     commit_word(&mut e, "ab", ' ');
     e.reset_diff();
     assert_eq!(e.trailing_gap(), 0);
     assert!(e.edit_at_caret_diff(0, 's').is_none());
-    assert!(e.backspace_at_caret_diff(0).is_none());
+    assert!(!e.delete_char_at_caret(0));
 }

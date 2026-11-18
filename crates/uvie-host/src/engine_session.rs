@@ -99,13 +99,11 @@ impl EngineSession {
             .map(|(bs, fwd, s)| (bs, fwd, s.to_owned()))
     }
 
-    /// Backspace with the caret on a committed word's end: undo that word's
-    /// last raw keystroke. Returns `(backspaces, new_suffix)` to apply at the
-    /// caret when handled.
-    pub fn backspace_at(&mut self, caret_back: usize) -> Option<(usize, String)> {
-        self.engine
-            .backspace_at_caret_diff(caret_back)
-            .map(|(bs, s)| (bs, s.to_owned()))
+    /// Backspace with the caret on a committed word's end: the app deletes one
+    /// visible char natively and the engine only shrinks that word's tracked
+    /// text so it stays editable. Returns true when the engine tracked it.
+    pub fn delete_char_at(&mut self, caret_back: usize) -> bool {
+        self.engine.delete_char_at_caret(caret_back)
     }
 
     /// Caret offset the dispatcher must adopt after the last successful edit.

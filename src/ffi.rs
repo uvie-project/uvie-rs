@@ -298,32 +298,25 @@ pub extern "C" fn uvie_engine_edit_at(
     .unwrap_or(0)
 }
 
-/// Undo the last raw keystroke of the committed word ending at the caret
-/// (the same "undo one keystroke" semantics as Backspace, one step later).
+/// Record a native one-char delete at the caret (Backspace while idle with
+/// the caret at a committed word's end). The app deletes the character
+/// itself — the host passes the key through — and the engine only shrinks
+/// the word's tracked text so it stays editable.
 /// `caret_back` must match a word-end boundary of the committed-word history;
 /// mid-word carets and an empty history decline.
-/// Returns backspaces + 1 when handled (suffix written into `out_buf`), 0 when
-/// declined. The instruction applies AT the caret (which is at the word's
-/// end): erase `backspaces` chars, then type the suffix.
+/// Returns 1 when the deletion was tracked, 0 when it was not (the host also
+/// drops its caret history then).
 #[unsafe(no_mangle)]
-pub extern "C" fn uvie_engine_backspace_at(
-    engine: *mut UvieEngine,
-    caret_back: usize,
-    out_buf: *mut c_char,
-    out_len: usize,
-) -> usize {
+pub extern "C" fn uvie_engine_delete_char_at(engine: *mut UvieEngine, caret_back: usize) -> c_int {
     std::panic::catch_unwind(|| {
-        if engine.is_null() || out_buf.is_null() || out_len == 0 {
-            return 0;
-        }
         let Some(mut e) = lock_engine(engine) else {
             return 0;
         };
-        let Some((backspaces, suffix)) = e.backspace_at_caret_diff(caret_back) else {
-            return 0;
-        };
-        write_output(suffix, out_buf, out_len);
-        backspaces + 1
+        if e.delete_char_at_caret(caret_back) {
+            1
+        } else {
+            0
+        }
     })
     .unwrap_or(0)
 }

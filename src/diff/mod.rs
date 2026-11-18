@@ -9,8 +9,9 @@ mod utils;
 
 pub use state::{ComposingSnapshot, DiffState, EnglishFallback};
 
-use crate::buffers::OutBuffer;
+use crate::buffers::{CharVec, OutBuffer};
 use crate::engine::UltraFastViEngine;
+use crate::modes::InputMethod;
 use state::CommittedWord;
 
 /// Where a host caret offset (`caret_back`) lands in the committed-word ring.
@@ -20,6 +21,78 @@ enum CaretHit {
     /// Strictly inside ring entry `step`, `chars_before` rendered chars left
     /// of the caret.
     MidWord(usize, usize),
+}
+
+/// Vietnamese modifier a base letter can carry (canonical keystroke forms).
+const MOD_NONE: u8 = 0;
+const MOD_CIRCUMFLEX: u8 = 1;
+const MOD_BREVE: u8 = 2;
+const MOD_HORN: u8 = 3;
+const MOD_STROKE: u8 = 4;
+
+/// (accented vowel, plain base letter, modifier) for every Vietnamese vowel
+/// form the engine renders — precomposed NFC, without a tone.
+const VOWEL_FORMS: [(char, char, u8); 12] = [
+    ('a', 'a', MOD_NONE),
+    ('ă', 'a', MOD_BREVE),
+    ('â', 'a', MOD_CIRCUMFLEX),
+    ('e', 'e', MOD_NONE),
+    ('ê', 'e', MOD_CIRCUMFLEX),
+    ('i', 'i', MOD_NONE),
+    ('o', 'o', MOD_NONE),
+    ('ô', 'o', MOD_CIRCUMFLEX),
+    ('ơ', 'o', MOD_HORN),
+    ('u', 'u', MOD_NONE),
+    ('ư', 'u', MOD_HORN),
+    ('y', 'y', MOD_NONE),
+];
+
+/// Tone key for tone `tone` (1 = sắc … 5 = nặng) in `method`.
+fn canonical_tone_key(method: InputMethod, tone: u8) -> char {
+    match method {
+        InputMethod::Vni => (b'0' + tone) as char,
+        _ => match tone {
+            1 => 's',
+            2 => 'f',
+            3 => 'r',
+            4 => 'x',
+            _ => 'j',
+        },
+    }
+}
+
+/// Keys that turn `base` into the letter carrying `modifier` (`upper` picks
+/// the uppercase form of every letter key; tone keys and single modifiers
+/// stay lowercase).
+fn push_canonical_modifier(
+    method: InputMethod,
+    base: char,
+    modifier: u8,
+    upper: bool,
+    raw: &mut CharVec<24>,
+) -> bool {
+    let base = if upper {
+        base.to_ascii_uppercase()
+    } else {
+        base
+    };
+    let modifier_key = match method {
+        InputMethod::Vni => match modifier {
+            MOD_CIRCUMFLEX => '6',
+            MOD_BREVE => '8',
+            MOD_HORN => '7',
+            MOD_STROKE => '9',
+            _ => return raw.try_push(base),
+        },
+        // Telex doubles the letter for the circumflex and for `đ`; `w` adds
+        // the breve/horn to the base letter.
+        _ => match modifier {
+            MOD_CIRCUMFLEX | MOD_STROKE => return raw.try_push(base) && raw.try_push(base),
+            MOD_BREVE | MOD_HORN => 'w',
+            _ => return raw.try_push(base),
+        },
+    };
+    raw.try_push(base) && raw.try_push(modifier_key)
 }
 
 /// Diff-mode input API: minimal-edit instructions for each keystroke.
@@ -497,9 +570,21 @@ impl Diffable for UltraFastViEngine {
         // The host's caretBack is the ground truth: it must exactly match a
         // word-end boundary or land strictly inside a word (double spaces,
         // pastes and unseen caret jumps resolve to nothing — passthrough).
+        // A word whose raw no longer types its rendered text (a native
+        // Backspace on English input) cannot be re-rendered: decline.
         match self.resolve_caret(caret_back)? {
-            CaretHit::WordEnd(step) => self.edit_word_end(step, caret_back, ch),
-            CaretHit::MidWord(step, chars_before) => self.edit_mid_word(step, chars_before, ch),
+            CaretHit::WordEnd(step) => {
+                if !self.diff.committed(step)?.editable {
+                    return None;
+                }
+                self.edit_word_end(step, caret_back, ch)
+            }
+            CaretHit::MidWord(step, chars_before) => {
+                if !self.diff.committed(step)?.editable {
+                    return None;
+                }
+                self.edit_mid_word(step, chars_before, ch)
+            }
         }
     }
 
@@ -674,32 +759,38 @@ impl UltraFastViEngine {
         self.diff.last_edit_caret_back
     }
 
-    /// Undo the last raw keystroke of the committed word ending at the caret
-    /// — the same "undo one keystroke" semantics as composing Backspace, one
-    /// step later. `caret_back` must match a word-end boundary; mid-word
-    /// carets and an empty ring decline.
+    /// The host deleted one visible char natively: Backspace while idle with
+    /// the caret exactly at a committed word's end. The OS owns the visible
+    /// edit (one char, one key press — a held key repeats cleanly, unlike the
+    /// synthetic delete+retype pairs the old keystroke-undo did); the engine
+    /// only tracks it so the word stays editable: its rendered text shrinks
+    /// by one char and its raw keystrokes are rebuilt from the rest.
     ///
-    /// Returns `(backspaces, suffix)` to apply AT the caret (which is at the
-    /// word's end): erase `backspaces` chars, then type `suffix`. The entry is
-    /// updated in place; when its raw becomes empty the entry is removed and
-    /// its gap merges into the older neighbor. The engine stays idle, so the
-    /// host's new caret offset is `last_caret_back_after_edit()`.
-    pub fn backspace_at_caret_diff(&mut self, caret_back: usize) -> Option<(usize, &str)> {
+    /// Returns true when the engine tracked the deletion. The host passes the
+    /// key through either way; on false it also drops its caret history.
+    /// Mid-word carets and an empty ring decline.
+    pub fn delete_char_at_caret(&mut self, caret_back: usize) -> bool {
         if self.is_composing_diff() {
-            return None;
+            return false;
         }
-        let CaretHit::WordEnd(step) = self.resolve_caret(caret_back)? else {
-            return None;
+        let Some(CaretHit::WordEnd(step)) = self.resolve_caret(caret_back) else {
+            return false;
         };
-        let old_rendered = self.diff.committed(step)?.rendered.clone();
-        let mut new_raw = self.diff.committed(step)?.raw.clone();
-        new_raw.pop()?;
+        let Some(entry) = self.diff.committed(step) else {
+            return false;
+        };
+        let mut new_rendered = entry.rendered.clone();
+        if new_rendered.pop().is_none() {
+            return false;
+        }
 
-        if new_raw.is_empty() {
+        if new_rendered.is_empty() {
             // The word is gone: drop the entry and let the older neighbor
             // absorb its separators (they become adjacent on screen).
             let older_gap = self.diff.committed(step + 1).map(|w| w.gap);
-            let removed = self.diff.remove_committed(step)?;
+            let Some(removed) = self.diff.remove_committed(step) else {
+                return false;
+            };
             if let Some(older) = self.diff.committed_mut(step) {
                 older.gap += removed.gap;
             }
@@ -711,18 +802,83 @@ impl UltraFastViEngine {
                 (0, None) => 0,
                 _ => caret_back as isize,
             };
-            let (bs, _) = Self::diff_into(&old_rendered, "", &mut self.diff.diff_suffix);
-            return Some((bs, &self.diff.diff_suffix));
+            return true;
         }
 
+        // Rebuild the keystrokes that type the remaining text. The word stays
+        // editable only when they render back to it exactly; an English word
+        // whose letters the engine would transform when re-typed ("wa": a
+        // leading `w` is the ư modifier) keeps its geometry but declines edits.
+        let new_raw = self.canonical_raw(&new_rendered);
         let prev = self.diff.committed(step + 1).cloned();
-        let new_rendered = self.render_committed_word(&new_raw, prev.as_ref());
-        let (bs, _) = Self::diff_into(&old_rendered, &new_rendered, &mut self.diff.diff_suffix);
-        let entry = self.diff.committed_mut(step)?;
-        entry.raw = new_raw;
+        let editable = new_raw
+            .as_ref()
+            .is_some_and(|raw| self.render_committed_word(raw, prev.as_ref()) == new_rendered);
+        let new_raw = new_raw.filter(|_| editable);
+        let Some(entry) = self.diff.committed_mut(step) else {
+            return false;
+        };
         entry.rendered = new_rendered;
+        entry.editable = new_raw.is_some();
+        if let Some(raw) = new_raw {
+            entry.raw = raw;
+        }
+        // The deleted char sat LEFT of the caret, so the caret and the anchor
+        // both shift left by one: the caret-to-anchor distance is unchanged.
         self.diff.last_edit_caret_back = caret_back as isize;
-        Some((bs, &self.diff.diff_suffix))
+        true
+    }
+
+    /// Keystrokes that type `rendered` in the current input method (Telex:
+    /// â=aa ă=aw ê=ee ô=oo ơ=ow ư=uw đ=dd, tones s f r x j; VNI: a6 e6 o6 a8
+    /// o7 u7 d9, tones 1..5), with every tone key posted at the END of the
+    /// word — the natural Telex/VNI typing order. Case is preserved: an
+    /// uppercase base letter takes uppercase keys and doubled letters follow
+    /// it ("Ê" = "EE"), while tone keys and single modifiers stay lowercase.
+    ///
+    /// Returns None when a char has no keystroke encoding or the raw buffer
+    /// overflows; the caller then falls back to a non-editable entry.
+    fn canonical_raw(&self, rendered: &str) -> Option<CharVec<24>> {
+        let mut raw = CharVec::<24>::new();
+        let mut tones = CharVec::<8>::new();
+        for c in rendered.chars() {
+            if !self.push_canonical_char(c, &mut raw, &mut tones) {
+                return None;
+            }
+        }
+        for &tone in tones.iter() {
+            if !raw.try_push(tone) {
+                return None;
+            }
+        }
+        Some(raw)
+    }
+
+    /// One rendered char's canonical keystrokes (`raw`), with its tone key
+    /// collected into `tones` for the end-of-word placement.
+    fn push_canonical_char(&self, c: char, raw: &mut CharVec<24>, tones: &mut CharVec<8>) -> bool {
+        if c.is_ascii() {
+            return raw.try_push(c);
+        }
+        let lower = c.to_lowercase().next().unwrap_or(c);
+        let upper = c.is_uppercase();
+        if lower == 'đ' {
+            return push_canonical_modifier(self.input_method, 'd', MOD_STROKE, upper, raw);
+        }
+        // Accented vowel: recover the plain base letter, the modifier and the
+        // tone by scanning the engine's own tone table.
+        for &(form, base, modifier) in VOWEL_FORMS.iter() {
+            for tone in 0..=5u8 {
+                if crate::tone::map_vowel_with_tone(form, tone) != lower {
+                    continue;
+                }
+                if tone > 0 && !tones.try_push(canonical_tone_key(self.input_method, tone)) {
+                    return false;
+                }
+                return push_canonical_modifier(self.input_method, base, modifier, upper, raw);
+            }
+        }
+        false
     }
 
     /// Append `ch` to the raw keystrokes of committed word `step` (0 =

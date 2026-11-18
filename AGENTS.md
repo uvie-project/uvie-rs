@@ -78,10 +78,20 @@ The engine has two APIs:
     stay editable) and the engine stays IDLE. The new raw is rendered on a
     scratch engine; only the dictionary applies to it (the restore-raw and
     context rules judge finished words, not in-place edits).
-  - `backspace_at_caret_diff(caret_back)` (FFI `uvie_engine_backspace_at`):
-    at a word end, undo that word's last keystroke in place ("viêt " ⌫⌫ →
-    "viê", then 'j' → "việ"). A word that becomes empty is removed and its
-    gap merges into the older neighbor.
+  - `delete_char_at_caret(caret_back)` (FFI `uvie_engine_delete_char_at`):
+    an idle Backspace at a word end is a NATIVE one-char delete — the host
+    passes the key through (one visible char per press, no synthetic
+    delete+retype racing the key repeat) and the engine only shrinks that
+    word's tracked text so it stays editable. The new raw is
+    `canonical_raw(rendered)`: each rendered char re-encoded as the keystrokes
+    that type it in the current method (Telex â=aa ă=aw ê=ee ô=oo ơ=ow ư=uw
+    đ=dd, tones s f r x j; VNI a6 e6 o6 a8 o7 u7 d9, tones 1..5), tone keys at
+    the END of the word, case preserved ("Ê" = "EE"). The entry stays editable
+    only when those keys render back to the text exactly; otherwise
+    `editable = false` — geometry kept, edits on it decline (English "wa"
+    would re-render as "ưa"). A word that becomes empty is removed and its
+    gap merges into the older neighbor. `caret_back` is unchanged: the deleted
+    char is left of the caret, so the caret and the anchor shift together.
   - Mid-word placement (`edit_mid_word`): the entry's raw is replayed on a
     scratch engine to recover each V-C-V syllable boundary and rendered
     span. Tone/modifier keys apply at the END of the caret's syllable raw

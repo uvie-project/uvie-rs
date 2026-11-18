@@ -79,18 +79,16 @@ size_t uvie_engine_edit_at(UvieEngine *engine,
                            size_t *out_fwd_del);
 
 /**
- * Undo the last raw keystroke of the committed word ending at the caret
- * (the same "undo one keystroke" semantics as Backspace, one step later).
+ * Record a native one-char delete at the caret (Backspace while idle with
+ * the caret at a committed word's end). The app deletes the character
+ * itself — the host passes the key through — and the engine only shrinks
+ * the word's tracked text so it stays editable.
  * `caret_back` must match a word-end boundary of the committed-word history;
  * mid-word carets and an empty history decline.
- * Returns backspaces + 1 when handled (suffix written into `out_buf`), 0 when
- * declined. The instruction applies AT the caret (which is at the word's
- * end): erase `backspaces` chars, then type the suffix.
+ * Returns 1 when the deletion was tracked, 0 when it was not (the host also
+ * drops its caret history then).
  */
-size_t uvie_engine_backspace_at(UvieEngine *engine,
-                                size_t caret_back,
-                                char *out_buf,
-                                size_t out_len);
+int uvie_engine_delete_char_at(UvieEngine *engine, size_t caret_back);
 
 /**
  * Record a separator char (space / punctuation / Enter) typed right after the

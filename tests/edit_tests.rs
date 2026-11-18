@@ -338,27 +338,28 @@ fn reset_clears_edit_history() {
 }
 
 #[test]
-fn backspace_after_edit_undoes_the_edit() {
+fn backspace_after_edit_deletes_one_visible_char() {
     let mut s = Screen::new(true);
     s.commit_word("don");
     s.arrow_left();
     let _ = s.edit('s').expect("edit handled");
     assert_eq!(s.text, "dón ");
     // The engine stays idle after an edit (the entry was updated in place),
-    // so a backspace at the caret — the edited word's end — undoes the last
-    // keystroke and restores the pre-edit word.
+    // so a Backspace at the caret — the edited word's end — is a NATIVE
+    // one-char delete: the engine only tracks it.
     assert!(!s.engine.is_composing_diff());
     assert_eq!(s.caret_back(), 0);
-    let (bs, out) = s
-        .engine
-        .backspace_at_caret_diff(s.caret_back())
-        .expect("backspace at the word end must re-open the word");
-    let out = out.to_string();
-    s.apply(bs, &out);
-    assert_eq!(
-        s.text, "don ",
-        "backspace after edit must restore the pre-edit word"
-    );
+    assert!(s.engine.delete_char_at_caret(s.caret_back()));
+    // The OS deletes one char left of the caret; the anchor moves with it.
+    let head: String = s.text.chars().take(s.caret - 1).collect();
+    let tail: String = s.text.chars().skip(s.caret).collect();
+    s.text = format!("{head}{tail}");
+    s.caret -= 1;
+    s.anchor -= 1;
+    assert_eq!(s.text, "dó ");
+    // The word stays editable: retyping the deleted char restores it.
+    let edited = s.edit('n').expect("the shortened word is still editable");
+    assert!(edited.contains("dón"), "got {edited:?}");
 }
 
 #[test]

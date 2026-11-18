@@ -151,6 +151,38 @@ fn text(s: &str) -> InputAction {
     InputAction::Text(s.to_string())
 }
 
+/// Type `text` through the dispatcher, then press Backspace `n` times like a
+/// real event source: every press must be PASSED THROUGH with an empty plan
+/// (the app deletes the char natively), and the screen must lose exactly one
+/// char per press. Returns the screen after each press.
+fn backspace_walk(d: &mut Dispatcher, text: &str, n: usize) -> Vec<String> {
+    let mut screen: Vec<char> = Vec::new();
+    let mut caret = 0usize;
+    for ch in text.chars() {
+        match d.handle(KeyEvent::char(ch), &Context::default()) {
+            Dispatch::Consume(plan) => apply_at(&mut screen, &mut caret, &plan),
+            Dispatch::Pass(plan) => {
+                apply_at(&mut screen, &mut caret, &plan);
+                screen.insert(caret, ch);
+                caret += 1;
+            }
+        }
+    }
+    let mut steps = Vec::new();
+    for _ in 0..n {
+        assert!(
+            expect_pass(d.handle(KeyEvent::backspace(), &Context::default())).is_empty(),
+            "a Backspace on committed text must never inject a synthetic edit"
+        );
+        if caret > 0 {
+            caret -= 1;
+            screen.remove(caret);
+        }
+        steps.push(screen.iter().collect::<String>());
+    }
+    steps
+}
+
 #[test]
 fn telex_tones_and_modifiers() {
     let mut d = dispatcher();
@@ -942,15 +974,73 @@ fn edit_older_word_keeps_newer_words_editable() {
 }
 
 #[test]
-fn backspace_reopens_a_committed_word() {
-    // The first Backspace deletes the separator, the second re-opens the word
-    // and undoes its last keystroke.
+fn backspace_keeps_a_committed_word_editable() {
+    // The first Backspace deletes the separator, the second is passed through
+    // so the app deletes the word's last visible char natively ("viêt" ->
+    // "viê"); the word stays editable, so 't' re-renders it.
     assert_eq!(replay_script(&mut dispatcher(), "vieet <<tj"), "việt|");
     // A word being edited in place is an intermediate state: only the
     // dictionary applies, the restore-raw rule judges finished words.
     assert_eq!(replay_script(&mut dispatcher(), "vieet <<j"), "việ|");
-    // ... and retyping the popped key restores the word.
+    // ... and retyping the deleted char restores the word.
     assert_eq!(replay_script(&mut dispatcher(), "hoc <<c"), "hoc|");
+}
+
+#[test]
+fn backspace_walks_committed_text_one_char_per_press() {
+    // A held Backspace over committed words is a plain native delete: every
+    // press passes through with no injected edit, so nothing races the key
+    // repeat and no Vietnamese text is ever re-rendered from English input.
+    let steps = backspace_walk(&mut dispatcher(), "tieengs vieetj ", 15);
+    let mut want = String::from("tiếng việt ");
+    for step in &steps {
+        want.pop();
+        assert_eq!(step, &want);
+    }
+    assert!(steps.last().is_some_and(|s| s.is_empty()));
+}
+
+#[test]
+fn backspace_on_english_words_stays_english() {
+    // "hello world " -> "hello wo": each press removes one char, and deleting
+    // chars of an English word never re-renders it as Telex (the old
+    // keystroke-undo produced "hello ư").
+    let steps = backspace_walk(&mut dispatcher(), "hello world ", 4);
+    assert_eq!(
+        steps.iter().map(String::as_str).collect::<Vec<_>>(),
+        ["hello world", "hello worl", "hello wor", "hello wo"]
+    );
+}
+
+#[test]
+fn backspace_then_edit_after_a_native_delete() {
+    // The shortened word stays editable and a tone key renders it exactly like
+    // typing the shortened word fresh: "viêt" -> "viê" -> 'j' -> "việ".
+    assert_eq!(replay_script(&mut dispatcher(), "vieet <<j"), "việ|");
+    // When the canonical raw already ends with its tone key, typing that key
+    // again is a DOUBLED tone key: the engine cancels it into the literal raw
+    // ("Vieejj"), exactly like typing that raw fresh.
+    assert_eq!(replay_script(&mut dispatcher(), "vieetj <<j"), "vieej|");
+    // Deleted down to a bare consonant: "v" + 'j' is the literal "vj".
+    assert_eq!(replay_script(&mut dispatcher(), "vieet <<<<j"), "vj|");
+    // "được" -> "đượ" -> 'j' is again a doubled tone key ("dduwowjj").
+    assert_eq!(replay_script(&mut dispatcher(), "dduwowcj <<j"), "đuwoj|");
+    // A consonant edit appends normally: "tiế" + 'n' -> "tiến".
+    assert_eq!(replay_script(&mut dispatcher(), "tieengs <<<n"), "tiến|");
+}
+
+#[test]
+fn backspace_deletes_native_chars_across_words() {
+    // Erasing a whole word drops its ring entry and merges its separators into
+    // the older word, which stays editable: "Việt Nam " -> "Việ" -> 's'
+    // replaces the nặng with a sắc.
+    assert_eq!(
+        replay_script(&mut dispatcher(), "Vieetj Nam <<<<<<s"),
+        "Viế|"
+    );
+    // Deleting one char of an OLDER word keeps the caret's offset: "ab"'s end
+    // stays editable after its native delete.
+    assert_eq!(replay_script(&mut dispatcher(), "ab cd {{{{<s"), "á| cd ");
 }
 
 #[test]

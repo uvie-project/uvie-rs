@@ -476,9 +476,9 @@ impl Dispatcher {
     }
 
     fn handle_backspace(&mut self) -> Dispatch {
-        // Idle: the caret is either on a committed word's end (re-open the
-        // word and undo its last keystroke) or inside the separators right of
-        // it (delete one of them).
+        // Idle: the caret is either on a committed word's end (the app deletes
+        // one char natively and the engine tracks it) or inside the separators
+        // right of it (delete one of them).
         if !self.session.is_composing() {
             return self.handle_idle_backspace();
         }
@@ -520,18 +520,16 @@ impl Dispatcher {
         Dispatch::Consume(plan)
     }
 
-    /// Backspace with nothing composing: undo the committed word ending at
-    /// the caret, or drop one of the separators right of it. Anything else is
-    /// an untracked caret and resets the history (the OS deletes the char).
+    /// Backspace with nothing composing: at a committed word's end the app
+    /// deletes one visible char natively and the engine only tracks it (the
+    /// word stays editable); inside the separators right of the word it drops
+    /// one of them. Anything else is an untracked caret and resets the history
+    /// (the OS deletes the char).
     fn handle_idle_backspace(&mut self) -> Dispatch {
         if self.caret_back >= 0 {
-            if self.edit_committed {
-                if let Some((bs, out)) = self.session.backspace_at(self.caret_back as usize) {
-                    self.caret_back = self.session.last_caret_back_after_edit();
-                    let mut plan = Vec::new();
-                    push_plan(&mut plan, bs, 0, &out);
-                    return Dispatch::Consume(plan);
-                }
+            if self.edit_committed && self.session.delete_char_at(self.caret_back as usize) {
+                self.caret_back = self.session.last_caret_back_after_edit();
+                return Dispatch::pass();
             }
             self.reset();
             return Dispatch::pass();
