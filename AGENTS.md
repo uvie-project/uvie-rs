@@ -436,6 +436,60 @@ restored by the retro walk or by a neutral previous word ("car the" → "cả th
 lơ, hót were removed because "as soon as", "how are you", "too", "host" need
 them.
 
+### Sentence context + hint (2026-11)
+Mixed Vietnamese/English typing used to judge a word by the ONE word before it,
+and a doubled modifier key never collapsed ("awware" stayed "awware").
+
+**Cancel collapse.** A double-press cancel now leaves no trace in the word the
+user meant. `DiffState::word_had_modifier_cancel` is set by every modifier
+cancel — the `w` cancels (`handle_telex_w`), the circumflex triple-cancel
+(`aa`/`ee`/`oo` in `handle_vowel`) and the `dd` revert — and
+`effective_word_raw()` (src/diff/mod.rs) rebuilds the word's spelling by
+replaying `word_raw` on a scratch engine and dropping the consumed key. Only a
+doubled MODIFIER collapses: a doubled tone key is genuine English spelling
+("off", "diffed", "mass", "coffee") and keeps every key. A consumed key only
+counts as a cancel when it repeats the previous key, so a `w` the pipeline
+swallowed for another reason ("browserclaw", "chuwongw") stays in the
+spelling. The effective raw is what the dictionary override, the restore-raw /
+ambiguous / plain-English rules, `commit_restoring_raw`,
+`begin_raw_passthrough` and the ring entry all use: "awware" → "aware",
+"awwa" → "awa" (composing too), "awwar" → "awar", "newws" → "news",
+"aww" → "aw". A second `w` after a literal `w` in a syllable with no modifier
+and no w-target is that cancel sequence ("neww" → "new"); a syllable that
+already carries a modifier keeps both keys ("aaww", "eeww", "showw").
+
+**Sentence context.** `DiffState::sentence_vi` is set when a committed word is
+Vietnamese evidence: its render carries marks or đ and is a common/top
+Vietnamese syllable whose keystrokes are not a known English word, or it is a
+top Vietnamese syllable of 2+ letters that is not an English function word
+("em", "anh", "nha", "cho"). It resets at a sentence boundary — `!`, `?`, a
+newline (immediately) and `.` (deferred: the dot is a code/decimal dot when the
+next word starts right after it, "a.b", or when the token is a URL) — and on
+every reset. The sentence state lives outside `DiffState::clear()`: a commit,
+the ring-preserving restore paths and `reopen_as_vietnamese` keep it, while
+`reset_diff` (`clear_sentence`) drops it.
+
+**Effective mode at commit** (`context_mode`): Vietnamese if `sentence_vi` or
+the hint says Vietnamese, else English if the hint says English, else Auto
+(today's rules). In Vietnamese mode the dictionary, ambiguous and retro rules
+keep a render that is a common or top Vietnamese syllable; everything that
+proves a non-Vietnamese token (code/URL/camelCase/j-f-z, acronyms, always-English
+tech words, restore-raw for impossible syllables) still fires. In English mode
+every `ENGLISH_AMBIGUOUS_WORDS` entry restores, score and top protection
+ignored.
+
+**Host hint.** `set_context_hint(ContextHint::{Auto,Vietnamese,English})`
+(`uvie_engine_set_context_hint`) is the host's NaturalLanguage verdict for the
+sentence it read from `sentence_text()` (`uvie_engine_sentence_text`) — the
+current sentence's committed words with their separators, oldest first,
+rebuilt from the ring and truncated to its 8 entries. The hint resets with the
+sentence context.
+
+Measured: English corpus (`zz_corpus`) 169 → 176 wrong (the sentence rule keeps
+"if"→"ì", "must"→"mút" and stops the retro fix rewriting "thí" once a sentence
+has a Vietnamese word); Vietnamese mixed corpus (`vi_corpus_tests.rs`) stays at
+0 wrong. Tests: `tests/context_mode_tests.rs`.
+
 ### English Dictionary Override (2026-08, expanded 2026-10)
 `src/tables/english.rs` — 18,039 common English words that produce garbled
 Vietnamese+English hybrids (e.g. `character`→`chẩcter`, `safari`→`sầri`,

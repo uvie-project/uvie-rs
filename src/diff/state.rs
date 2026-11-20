@@ -3,8 +3,35 @@
 //! All fields are stack-allocated (no heap) — see `buffers.rs` for the
 //! underlying `CharVec` / `OutBuffer` types.
 
-use crate::buffers::{CharVec, OutBuffer};
+use crate::buffers::{CharVec, OutBuffer, StackStr};
 use crate::syllable::SylBuf;
+
+/// Sentence-level language hint supplied by the host — e.g. Apple's
+/// NaturalLanguage recognizer run over `sentence_text()`.
+///
+/// `Auto` keeps the engine's own rules. `Vietnamese` and `English` force the
+/// sentence language at commit time; both reset to `Auto` at a sentence
+/// boundary, because the recognizer's verdict describes the sentence that
+/// just ended.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[repr(u8)]
+pub enum ContextHint {
+    #[default]
+    Auto = 0,
+    Vietnamese = 1,
+    English = 2,
+}
+
+impl ContextHint {
+    /// Decode the FFI's `u8` (`uvie_engine_set_context_hint`).
+    pub fn from_u8(value: u8) -> Self {
+        match value {
+            1 => Self::Vietnamese,
+            2 => Self::English,
+            _ => Self::Auto,
+        }
+    }
+}
 
 /// Snapshot of the composing state after a keystroke, used for O(1) backspace.
 /// All fields are stack-allocated (no heap).
@@ -22,6 +49,48 @@ pub struct ComposingSnapshot {
     /// A double-press tone-key cancel already fired in the composing word
     /// (see `DiffState::word_had_cancel`).
     pub word_had_cancel: bool,
+    /// A modifier-key cancel already fired in the composing word (see
+    /// `DiffState::word_had_modifier_cancel`).
+    pub word_had_modifier_cancel: bool,
+}
+
+/// A committed word on screen whose render carries a Vietnamese transform
+/// (a mark or đ), or a top Vietnamese particle of two letters or more that is
+/// not an English function word ("em", "anh", "nha", "cho"): the sentence is
+/// Vietnamese.
+///
+/// A marked render whose keystrokes spell a known English word is NOT
+/// evidence: "thí" is "this" waiting for the retroactive English fix, and
+/// treating it as Vietnamese would freeze the whole English sentence.
+fn is_vietnamese_evidence(raw: &[char], rendered: &str) -> bool {
+    // A raw/restored word is ASCII; any non-ASCII letter is a mark or đ the
+    // pipeline applied, which no English spelling produces.
+    if !rendered.is_ascii() {
+        if !rendered.chars().any(|c| c.is_alphabetic()) {
+            return false;
+        }
+        // The render must be a real Vietnamese word, not the marks the
+        // pipeline left on an English one ("mátẻ" is "master"), and its
+        // keystrokes must not spell an English word: "thí" is "this" waiting
+        // for the retroactive English fix.
+        return (crate::tables::is_top_vietnamese_syllable(rendered)
+            || crate::tables::is_common_vietnamese_syllable(rendered))
+            && !(crate::tables::is_english_override(raw)
+                || crate::tables::is_english_ambiguous_word(raw)
+                || crate::tables::is_english_doubled_key_word(raw));
+    }
+    // A top Vietnamese particle of two letters or more that is not an English
+    // function word ("em", "anh", "nha", "cho"): a sentence that already has
+    // one is Vietnamese.
+    rendered.chars().count() >= 2
+        && crate::tables::is_top_vietnamese_syllable(rendered)
+        && !crate::tables::is_english_function_word(rendered)
+}
+
+/// A separator char that ends a sentence. A `.` is only one when it is not a
+/// code/URL dot or glued between two letters ("a.b") — the caller checks.
+fn is_sentence_end(ch: char) -> bool {
+    matches!(ch, '.' | '!' | '?' | '\n' | '\r')
 }
 
 /// A committed word kept for post-commit editing (arrow-back onto the word
@@ -54,6 +123,9 @@ pub struct CommittedWord {
     /// its `raw` holds a key the user cancelled. The retroactive English fix
     /// must never rewrite this entry back to that raw.
     pub had_cancel: bool,
+    /// A sentence-ending separator (`.`, `!`, `?`, newline) was typed right
+    /// after this word: the next word starts a new sentence.
+    pub ends_sentence: bool,
 }
 
 /// Pre-override Vietnamese pipeline state, saved when the English
@@ -167,6 +239,25 @@ pub struct DiffState {
     /// the second `r` cancelled the hỏi). The user asked for the cancelled
     /// render, so a commit must not restore the keystrokes that produced it.
     pub word_had_cancel: bool,
+    /// A modifier-key double-press cancel fired in the composing word ("aww":
+    /// the second `w` cancelled the breve, "aas" after an `aa` → `â`). Unlike
+    /// a doubled tone key — which is genuine English spelling ("off",
+    /// "diffed", "mass") — a doubled modifier never belongs to an English
+    /// word, so every rebuild from the raw keystrokes drops the consumed key
+    /// ("awware" → "aware", "newws" → "news").
+    pub word_had_modifier_cancel: bool,
+    /// The current sentence already contains a Vietnamese word: its render
+    /// carries Vietnamese marks or đ, or it is a top Vietnamese particle
+    /// ("em", "anh", "nha"). Ambiguous words in such a sentence keep their
+    /// Vietnamese reading. Reset at a sentence boundary and on a full reset.
+    pub sentence_vi: bool,
+    /// Host-supplied sentence-language hint (NaturalLanguage). Reset to
+    /// `Auto` together with `sentence_vi`.
+    pub context_hint: ContextHint,
+    /// A `.` ended the previous word: it is a sentence boundary unless the
+    /// next word starts immediately after it ("a.b" — a code token, not
+    /// prose). Resolved by the first keystroke of the next word.
+    pub sentence_break_pending: bool,
     /// The current whitespace-delimited token is a URL / path / code token:
     /// it contains `://`, starts with `/`, `~/` or `./`, has a `.` before a
     /// `/` (`github.com/x`), or a code char glued to its text (`signed-by=`).
@@ -226,6 +317,10 @@ impl DiffState {
             word_since_sep: false,
             word_after_code: false,
             word_had_cancel: false,
+            word_had_modifier_cancel: false,
+            sentence_vi: false,
+            context_hint: ContextHint::Auto,
+            sentence_break_pending: false,
             token_url: false,
             token_len: 0,
             token_has_word: false,
@@ -270,7 +365,24 @@ impl DiffState {
         self.word_since_sep = false;
         self.word_after_code = false;
         self.word_had_cancel = false;
+        self.word_had_modifier_cancel = false;
         self.word_in_url = false;
+    }
+
+    /// Drop the sentence context: a full reset, after which the engine no
+    /// longer tracks the text the context described. An ordinary word commit
+    /// and the ring-preserving commit paths keep it.
+    pub fn clear_sentence(&mut self) {
+        self.sentence_vi = false;
+        self.context_hint = ContextHint::Auto;
+        self.sentence_break_pending = false;
+    }
+
+    /// The sentence is over: the next word starts a fresh one.
+    pub(crate) fn end_sentence(&mut self) {
+        self.sentence_vi = false;
+        self.context_hint = ContextHint::Auto;
+        self.sentence_break_pending = false;
     }
 
     /// Drop the separator history (`last_sep` / glued state) and the current
@@ -291,6 +403,11 @@ impl DiffState {
     /// The new entry starts with no separators after it; the host reports the
     /// ones typed after the word through `note_separator`.
     pub fn push_committed(&mut self, raw: CharVec<24>, rendered: OutBuffer) {
+        // The word now on screen decides the sentence language: a Vietnamese
+        // render keeps the rest of the sentence Vietnamese.
+        if is_vietnamese_evidence(&raw, &rendered) {
+            self.sentence_vi = true;
+        }
         if self.edit_history_len == self.edit_history.len() {
             self.edit_history[self.edit_history_start] = None;
             self.edit_history_start = (self.edit_history_start + 1) % self.edit_history.len();
@@ -304,12 +421,72 @@ impl DiffState {
             sep: '\0',
             editable: true,
             had_cancel: false,
+            ends_sentence: false,
         });
         self.edit_history_len += 1;
         self.word_since_sep = true;
         // The token holds a word now, so its next separator char is not the
         // token's first character.
         self.token_has_word = true;
+    }
+
+    /// Resolve a pending `.` sentence boundary: the dot ends the sentence
+    /// unless the new word starts right after it ("a.b" — the two halves of a
+    /// code identifier, not two sentences).
+    ///
+    /// `after_separator` is true when another separator char followed the dot
+    /// (`hocj. ` — prose, so a boundary whatever the dot was glued to) and
+    /// false when a word starts (`a.b`, `3.5` — the dot is a code/decimal
+    /// dot).
+    pub(crate) fn resolve_sentence_break(&mut self, after_separator: bool) {
+        if !self.sentence_break_pending {
+            return;
+        }
+        self.sentence_break_pending = false;
+        if !after_separator && self.last_sep == '.' && self.last_sep_glued {
+            return;
+        }
+        self.end_sentence();
+        if let Some(w) = self.committed_mut(0) {
+            w.ends_sentence = true;
+        }
+    }
+
+    /// The current sentence's committed words with their separators, oldest
+    /// first — the text a host runs its language recognizer on.
+    ///
+    /// Rebuilt from the committed-word ring, so a sentence longer than the
+    /// ring keeps only its newest words. A sentence-end separator ends the
+    /// walk; each word contributes the separators typed after it (`gap` of
+    /// them — the last one exact, the earlier ones remembered only as a
+    /// count, so spaces stand in).
+    pub fn sentence_text(&self) -> StackStr<512> {
+        let mut out = StackStr::<512>::new();
+        // Steps count back from the newest word, so the first sentence end
+        // found is the one that started this sentence.
+        let mut first = self.edit_history_len;
+        for step in 0..self.edit_history_len {
+            if self.committed(step).is_some_and(|w| w.ends_sentence) {
+                first = step;
+                break;
+            }
+        }
+        for step in (0..first).rev() {
+            let Some(word) = self.committed(step) else {
+                break;
+            };
+            let mut ok = out.push_str(&word.rendered);
+            for _ in 0..word.gap.saturating_sub(1) {
+                ok &= out.push(' ');
+            }
+            if word.gap > 0 {
+                ok &= out.push(word.sep);
+            }
+            if !ok {
+                break;
+            }
+        }
+        out
     }
 
     /// Ring slot of the entry at `step` (0 = newest, growing older).
@@ -355,6 +532,26 @@ impl DiffState {
         // after a space is normal punctuation (`(` in "foo (bar").
         let glued =
             self.word_since_sep || !matches!(self.last_sep, ' ' | '\t' | '\n' | '\r' | '\0');
+        // Sentence boundary: `!`, `?` and a newline always end the sentence.
+        // A `.` is only a boundary when it is not a URL/code dot: inside a
+        // token (`github.com/x`, `https://x.y`) it is part of the address, and
+        // glued between two letters ("a.b") it is a code identifier. The
+        // latter is decided when the next word starts — the `.` alone cannot
+        // tell "a.b" from "test. Next".
+        if ch == '.' {
+            if !self.token_url {
+                self.sentence_break_pending = true;
+            }
+        } else if is_sentence_end(ch) {
+            self.end_sentence();
+            if let Some(w) = self.committed_mut(0) {
+                w.ends_sentence = true;
+            }
+        } else {
+            // Any other separator after the dot proves it was prose
+            // punctuation, not a code/decimal dot.
+            self.resolve_sentence_break(true);
+        }
         self.last_sep = ch;
         self.last_sep_glued = glued;
         self.word_since_sep = false;

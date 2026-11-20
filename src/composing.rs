@@ -289,6 +289,7 @@ impl Composable for UltraFastViEngine {
                             self.raw_len -= 1;
                         }
                         self.mark_all_literal();
+                        self.diff.word_had_modifier_cancel = true;
                         return;
                     }
                 } else {

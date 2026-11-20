@@ -2,7 +2,7 @@ use std::ffi::{c_char, c_int};
 use std::ptr;
 use std::sync::{Mutex, MutexGuard};
 
-use crate::diff::Diffable;
+use crate::diff::{ContextHint, Diffable};
 use crate::engine::UltraFastViEngine;
 use crate::modes::InputMethod;
 
@@ -351,7 +351,9 @@ pub extern "C" fn uvie_engine_delete_char_at(engine: *mut UvieEngine, caret_back
 /// newest committed word. No-op while nothing is committed.
 ///
 /// The char itself matters: a code char glued to the text before it (`_` in
-/// `foo_bar`, `.` in `a.b`) makes the next word a code identifier.
+/// `foo_bar`, `.` in `a.b`) makes the next word a code identifier, and `!`,
+/// `?`, a newline or a sentence-ending `.` starts a new sentence (the
+/// sentence context and the language hint reset there).
 #[unsafe(no_mangle)]
 pub extern "C" fn uvie_engine_note_separator(engine: *mut UvieEngine, ch: c_char) {
     let _ = std::panic::catch_unwind(|| {
@@ -359,6 +361,46 @@ pub extern "C" fn uvie_engine_note_separator(engine: *mut UvieEngine, ch: c_char
             e.note_separator(ch as u8 as char);
         }
     });
+}
+
+/// Set the sentence-language hint the engine uses at commit time:
+/// `0` = auto (the engine's own rules), `1` = Vietnamese, `2` = English.
+///
+/// A host that runs a language recognizer over `uvie_engine_sentence_text`
+/// passes its verdict here. The hint describes the sentence being typed, so
+/// the engine resets it to auto at a sentence boundary and on every reset.
+#[unsafe(no_mangle)]
+pub extern "C" fn uvie_engine_set_context_hint(engine: *mut UvieEngine, hint: u8) {
+    let _ = std::panic::catch_unwind(|| {
+        if let Some(mut e) = lock_engine(engine) {
+            e.set_context_hint(ContextHint::from_u8(hint));
+        }
+    });
+}
+
+/// Write the current sentence so far — its committed words with their
+/// separators, oldest first — as UTF-8 into `out_buf` for a language
+/// recognizer. The composing word is not included. A sentence longer than the
+/// engine's committed-word ring keeps only its newest words.
+/// Returns byte count of the written string (excluding null terminator);
+/// truncated at a char boundary when `out_len` is too small.
+#[unsafe(no_mangle)]
+pub extern "C" fn uvie_engine_sentence_text(
+    engine: *const UvieEngine,
+    out_buf: *mut c_char,
+    out_len: usize,
+) -> usize {
+    std::panic::catch_unwind(|| {
+        if engine.is_null() || out_buf.is_null() || out_len == 0 {
+            return 0;
+        }
+        let Some(e) = lock_engine_const(engine) else {
+            return 0;
+        };
+        let text = e.sentence_text();
+        write_output(&text, out_buf, out_len)
+    })
+    .unwrap_or(0)
 }
 
 /// Record that a separator char right after the newest committed word was

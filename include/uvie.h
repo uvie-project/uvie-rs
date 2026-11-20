@@ -104,9 +104,31 @@ int uvie_engine_delete_char_at(UvieEngine *engine, size_t caret_back);
  * newest committed word. No-op while nothing is committed.
  *
  * The char itself matters: a code char glued to the text before it (`_` in
- * `foo_bar`, `.` in `a.b`) makes the next word a code identifier.
+ * `foo_bar`, `.` in `a.b`) makes the next word a code identifier, and `!`,
+ * `?`, a newline or a sentence-ending `.` starts a new sentence (the
+ * sentence context and the language hint reset there).
  */
 void uvie_engine_note_separator(UvieEngine *engine, char ch);
+
+/**
+ * Set the sentence-language hint the engine uses at commit time:
+ * `0` = auto (the engine's own rules), `1` = Vietnamese, `2` = English.
+ *
+ * A host that runs a language recognizer over `uvie_engine_sentence_text`
+ * passes its verdict here. The hint describes the sentence being typed, so
+ * the engine resets it to auto at a sentence boundary and on every reset.
+ */
+void uvie_engine_set_context_hint(UvieEngine *engine, uint8_t hint);
+
+/**
+ * Write the current sentence so far — its committed words with their
+ * separators, oldest first — as UTF-8 into `out_buf` for a language
+ * recognizer. The composing word is not included. A sentence longer than the
+ * engine's committed-word ring keeps only its newest words.
+ * Returns byte count of the written string (excluding null terminator);
+ * truncated at a char boundary when `out_len` is too small.
+ */
+size_t uvie_engine_sentence_text(const UvieEngine *engine, char *out_buf, size_t out_len);
 
 /**
  * Record that a separator char right after the newest committed word was

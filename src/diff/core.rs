@@ -38,6 +38,7 @@ impl UltraFastViEngine {
             // restore for it (see `word_raw_string`).
             self.diff.word_raw_overflowed = true;
             self.diff.word_had_cancel = false;
+            self.diff.word_had_modifier_cancel = false;
             self.diff.english_fallback = None;
             self.diff.prev_inner_render.clear();
             self.diff.last_valid_raw_len = 0;
@@ -295,6 +296,7 @@ impl UltraFastViEngine {
         self.diff.diff_committed = fb.diff_committed;
         self.diff.word_raw.truncate(fb.word_len);
         self.diff.word_had_cancel = fb.snap.word_had_cancel;
+        self.diff.word_had_modifier_cancel = fb.snap.word_had_modifier_cancel;
         self.diff.english_sticky = false;
 
         // Replay the tail through the live pipeline (snapshots, V-C-V splits
@@ -337,14 +339,21 @@ impl UltraFastViEngine {
 
         // Clear composing/diff word state exactly like `reset_diff`, but keep
         // the committed-word ring: older words are still on screen and stay
-        // editable.
+        // editable. The sentence context describes that same text, so it
+        // survives too — this word is still being typed.
         let ring = ::core::mem::take(&mut self.diff.edit_history);
         let ring_start = self.diff.edit_history_start;
         let ring_len = self.diff.edit_history_len;
+        let sentence_vi = self.diff.sentence_vi;
+        let context_hint = self.diff.context_hint;
+        let sentence_break_pending = self.diff.sentence_break_pending;
         self.reset_diff();
         self.diff.edit_history = ring;
         self.diff.edit_history_start = ring_start;
         self.diff.edit_history_len = ring_len;
+        self.diff.sentence_vi = sentence_vi;
+        self.diff.context_hint = context_hint;
+        self.diff.sentence_break_pending = sentence_break_pending;
 
         // Replay the whole word with the override off: the dictionary prefix
         // would otherwise fire again and re-pin the word to raw.
@@ -379,7 +388,9 @@ impl UltraFastViEngine {
         let _ = screen.push_str(&self.diff.diff_committed);
         let _ = screen.push_str(&self.diff.prev_rendered);
         let mut target = new_out_buffer();
-        for &c in self.diff.word_raw.iter() {
+        // The spelling the user meant: a modifier-key cancel leaves no trace
+        // ("awware" → "aware").
+        for &c in self.effective_word_raw().iter() {
             let _ = target.push(c);
         }
         let (bs, _) = Self::diff_into(&screen, &target, &mut self.diff.diff_suffix);
@@ -439,6 +450,7 @@ impl UltraFastViEngine {
         self.diff.last_valid_out.clear();
         // The replay below re-fires any cancel the surviving keys contain.
         self.diff.word_had_cancel = false;
+        self.diff.word_had_modifier_cancel = false;
 
         // Replay the surviving keystrokes through the core pipeline. This does
         // not touch `key_log` (the wrapper owns appends; V-C-V/full-buffer cannot

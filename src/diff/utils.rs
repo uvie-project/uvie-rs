@@ -469,6 +469,7 @@ impl UltraFastViEngine {
         if self.diff.word_raw.is_empty() {
             // The word is gone: so is any cancel it contained.
             self.diff.word_had_cancel = false;
+            self.diff.word_had_modifier_cancel = false;
         }
         if let Some(fb) = self.diff.english_fallback.as_ref() {
             if self.diff.word_raw.len() < fb.word_len {

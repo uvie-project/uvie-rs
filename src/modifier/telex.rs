@@ -162,6 +162,7 @@ impl TelexModifier for UltraFastViEngine {
                         }
                         self.buf.push(Syl::literal(b'w', caps));
                         self.reapply_tone_after_nucleus_change();
+                        self.diff.word_had_modifier_cancel = true;
                         return;
                     }
                 }
@@ -181,6 +182,7 @@ impl TelexModifier for UltraFastViEngine {
                             }
                         }
                         self.reapply_tone_after_nucleus_change();
+                        self.diff.word_had_modifier_cancel = true;
                         return;
                     }
                 }
@@ -196,6 +198,7 @@ impl TelexModifier for UltraFastViEngine {
                         }
                         self.buf.push(Syl::literal(b'w', caps));
                         self.reapply_tone_after_nucleus_change();
+                        self.diff.word_had_modifier_cancel = true;
                         return;
                     }
                 }
@@ -214,6 +217,7 @@ impl TelexModifier for UltraFastViEngine {
                 }
                 self.buf.push(Syl::literal(b'w', caps));
                 self.reapply_tone_after_nucleus_change();
+                self.diff.word_had_modifier_cancel = true;
                 return;
             }
             // Stop searching when we hit consonants after checking w-cancellation
@@ -224,12 +228,28 @@ impl TelexModifier for UltraFastViEngine {
 
         // No match - standalone 'w' becomes ư at onset.
         let onset_len = self.onset_len();
+        // A second `w` right after a `w` that stayed a literal letter is the
+        // cancel sequence for a modifier that never applied: consume it
+        // ("neww" → "new", "awwa" → "awa"). Only in a syllable that carries no
+        // Vietnamese modifier and no w-target at all — there a `w` is a plain
+        // letter the second one undoes. A vowel that merely could not take the
+        // horn keeps both keys, as it always has ("aaww", "eeww", "showw").
+        let plain_syllable = (0..n).all(|i| self.buf.get(i).flags & (F_HORN | F_CIRCUMFLEX) == 0);
+        let cancel_literal_w = plain_syllable && candidate_count == 0 && prev_is_w && n > 0 && {
+            let prev = self.buf.get(n - 1);
+            prev.base == b'w' && prev.flags & (F_HORN | F_CIRCUMFLEX | F_LITERAL) == 0
+        };
         if onset_len == n {
             let mut syl = Syl::literal(b'w', caps);
             syl.flags |= F_HORN;
             syl.out = if caps { 'Ư' } else { 'ư' };
             self.buf.push(syl);
             self.reapply_tone_after_nucleus_change();
+        } else if cancel_literal_w {
+            if self.raw_len > 0 {
+                self.raw_len -= 1;
+            }
+            self.diff.word_had_modifier_cancel = true;
         } else {
             self.buf.push(Syl::literal(b'w', caps));
         }
@@ -345,6 +365,7 @@ impl TelexModifier for UltraFastViEngine {
                         self.raw_len -= 1;
                     }
                     self.mark_all_literal();
+                    self.diff.word_had_modifier_cancel = true;
                     return;
                 }
                 break;
