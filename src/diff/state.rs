@@ -475,6 +475,14 @@ impl DiffState {
             let Some(word) = self.committed(step) else {
                 break;
             };
+            // An ambiguous English word ("cos" → "có", "this" → "thí") is the
+            // very thing the language decision is about: whichever reading is
+            // on screen would bias the recognizer toward itself ("thí is a"
+            // reads Vietnamese). Leave it out so only the unambiguous words
+            // decide.
+            if crate::tables::english_ambiguous_score(&word.raw).is_some() {
+                continue;
+            }
             let mut ok = out.push_str(&word.rendered);
             for _ in 0..word.gap.saturating_sub(1) {
                 ok &= out.push(' ');

@@ -265,12 +265,13 @@ fn sentence_text_lists_the_current_sentence() {
     // A newline starts a new sentence.
     host.word_break('\n');
     assert_eq!(&*host.engine.sentence_text(), "");
-    host.type_seq("nos ");
-    assert_eq!(&*host.engine.sentence_text(), "nó ");
-    // The retroactive English fix rewrites the words it restored.
+    // Ambiguous English words ("nos"/"nó", "this"/"thí") are left out: the
+    // reading on screen would bias the recognizer toward itself.
+    host.type_seq("nos ddi ");
+    assert_eq!(&*host.engine.sentence_text(), "đi ");
     let mut host = Host::new();
     host.type_seq("this is a test ");
-    assert_eq!(&*host.engine.sentence_text(), "this is a test ");
+    assert_eq!(&*host.engine.sentence_text(), "a ");
 }
 
 #[test]

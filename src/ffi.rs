@@ -380,7 +380,8 @@ pub extern "C" fn uvie_engine_set_context_hint(engine: *mut UvieEngine, hint: u8
 
 /// Write the current sentence so far — its committed words with their
 /// separators, oldest first — as UTF-8 into `out_buf` for a language
-/// recognizer. The composing word is not included. A sentence longer than the
+/// recognizer. The composing word and ambiguous English words ("cos"/"có",
+/// "this"/"thí") are not included. A sentence longer than the
 /// engine's committed-word ring keeps only its newest words.
 /// Returns byte count of the written string (excluding null terminator);
 /// truncated at a char boundary when `out_len` is too small.

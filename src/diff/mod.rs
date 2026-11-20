@@ -1026,7 +1026,8 @@ impl UltraFastViEngine {
     ///
     /// Rebuilt from the committed-word ring, so a sentence longer than the
     /// ring keeps only its newest words; it never includes the composing
-    /// word.
+    /// word. Ambiguous English words ("cos"/"có", "this"/"thí") are left out:
+    /// whichever reading is on screen would bias the recognizer.
     pub fn sentence_text(&self) -> StackStr<512> {
         self.diff.sentence_text()
     }
