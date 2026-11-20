@@ -79,6 +79,10 @@ const CONTRACTION_SUFFIXES: [&str; 7] = ["t", "s", "m", "ll", "re", "ve", "d"];
 /// ("diff" + "ed" / "s" / "ing" / "er", "off" + "s").
 const DOUBLED_KEY_SUFFIXES: [&str; 7] = ["s", "es", "ed", "ing", "er", "ers", "ly"];
 
+/// Two-letter English words a double-press tone cancel produces ("iss" →
+/// "is", "ass" → "as", "orr" → "or", "iff" → "if", "uss" → "us").
+const TWO_LETTER_CANCEL_WORDS: [&str; 5] = ["as", "if", "is", "or", "us"];
+
 /// Case-insensitive `str` equality (`"Bánh"` == `"bánh"`).
 fn str_eq_ignore_case(a: &str, b: &str) -> bool {
     a.chars().count() == b.chars().count()
@@ -1638,7 +1642,18 @@ impl UltraFastViEngine {
         let mut screen = crate::buffers::new_out_buffer();
         let _ = screen.push_str(&self.diff.diff_committed);
         let _ = screen.push_str(&self.diff.prev_rendered);
-        if screen.chars().count() < 3 || !screen.chars().all(|c| c.is_ascii_alphabetic()) {
+        if !screen.chars().all(|c| c.is_ascii_alphabetic()) {
+            return false;
+        }
+        // Two-letter English words whose Telex keys get a tone ("is" → "í",
+        // "as" → "á"): the double press is the only way to type them, so the
+        // cancelled form wins over the rarer doubled spelling ("iss" → "is").
+        // "off" stays: it is far more common than "of" typed that way.
+        if screen.chars().count() == 2 {
+            let lower = screen.to_ascii_lowercase();
+            return TWO_LETTER_CANCEL_WORDS.contains(&lower.as_str());
+        }
+        if screen.chars().count() < 3 {
             return false;
         }
         let mut chars = CharVec::<24>::new();

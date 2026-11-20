@@ -312,3 +312,25 @@ fn composing_never_shows_the_cancelled_key() {
     assert_eq!(type_telex("neww"), "new");
     assert_eq!(type_telex("carr"), "car");
 }
+
+#[test]
+fn two_letter_words_typed_with_a_cancel() {
+    // "is"/"as" get a tone in Telex ("í", "á"), so a double press is how
+    // they are typed: the cancelled form wins over the doubled spelling.
+    for (input, expected) in [
+        ("iss ", "is "),
+        ("Iss ", "Is "),
+        ("this iss a test ", "this is a test "),
+        ("ass ", "as "),
+        ("orr ", "or "),
+        ("iff ", "if "),
+        ("uss ", "us "),
+        // Real English words keep their doubled keys.
+        ("off ", "off "),
+        ("kiss ", "kiss "),
+        ("miss ", "miss "),
+        ("issue ", "issue "),
+    ] {
+        assert_eq!(type_telex(input), expected, "input: {input:?}");
+    }
+}
