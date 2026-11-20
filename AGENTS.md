@@ -398,7 +398,7 @@ original keycode + flags for Enter).
 The rarity score is an inventory count, not a frequency: the most common
 particles score as rare there (nó 1, vẻ 7, sẽ 8, mã 22, cả 21, bú 0), so
 "em nos" flipped "nó" back to "nos" and a later English word rewrote "vẻ".
-`src/tables/vietnamese_top.rs` is the curated exception (432 hand-picked
+`src/tables/vietnamese_top.rs` is the curated exception (434 hand-picked
 syllables/particles, NFC lowercase, code-point sorted, case-insensitive
 binary search; `is_top_vietnamese_syllable`):
 

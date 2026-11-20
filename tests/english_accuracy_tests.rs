@@ -316,6 +316,11 @@ fn top_vietnamese_words_survive_the_english_rules() {
     // the curated top-syllable list is a word Vietnamese speakers type: the
     // English rules keep it unless the sentence really is English.
     for (input, expected) in [
+        // The interjection "ưm" ("wm") is Vietnamese, not the English "wm".
+        ("wm ", "ưm "),
+        ("Wm ", "Ưm "),
+        ("wm ddungs roofi ", "ưm đúng rồi "),
+        ("the wm ", "the wm "),
         // A short particle as the previous word ("em", "to") is neutral, not
         // English, so the next word keeps its marks.
         ("em nos ", "em nó "),

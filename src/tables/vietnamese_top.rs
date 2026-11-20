@@ -442,6 +442,7 @@ static VIETNAMESE_TOP_SYLLABLES: &[&str] = &[
     "ơi",
     "ơn",
     "ưa",
+    "ưm",
     "ưu",
     "ạ",
     "ải",
@@ -451,6 +452,7 @@ static VIETNAMESE_TOP_SYLLABLES: &[&str] = &[
     "ờ",
     "ủ",
     "ừ",
+    "ừm",
 ];
 
 /// Compare `word` against a table entry, case-insensitively: the tables store
