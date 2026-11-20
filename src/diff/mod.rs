@@ -48,13 +48,29 @@ const CODE_END_CHARS: [char; 5] = ['_', '`', '=', '\\', '@'];
 
 /// The separator char starts a code identifier when it is glued to the text
 /// on its left (`foo_bar`, `a.b`).
-fn is_code_glue_char(ch: char) -> bool {
+pub(crate) fn is_code_glue_char(ch: char) -> bool {
     CODE_GLUE_CHARS.contains(&ch)
 }
 
 /// The separator char terminates a code identifier (`raw_chars`).
 fn is_code_end_char(ch: char) -> bool {
     CODE_END_CHARS.contains(&ch)
+}
+
+/// Contraction suffixes that may follow a glued apostrophe ("didn't",
+/// "it's", "I'm", "we'll", "they're", "I've", "I'd").
+const CONTRACTION_SUFFIXES: [&str; 7] = ["t", "s", "m", "ll", "re", "ve", "d"];
+
+/// English inflection suffixes a doubled-Telex-key stem may carry
+/// ("diff" + "ed" / "s" / "ing" / "er", "off" + "s").
+const DOUBLED_KEY_SUFFIXES: [&str; 7] = ["s", "es", "ed", "ing", "er", "ers", "ly"];
+
+/// Case-insensitive `str` equality (`"Bánh"` == `"bánh"`).
+fn str_eq_ignore_case(a: &str, b: &str) -> bool {
+    a.chars().count() == b.chars().count()
+        && a.chars()
+            .zip(b.chars())
+            .all(|(x, y)| x.to_lowercase().eq(y.to_lowercase()))
 }
 
 /// A Vietnamese vowel, toned or not ("Ỉ", "É", "a").
@@ -214,6 +230,18 @@ impl Diffable for UltraFastViEngine {
             return (bs, &self.diff.diff_suffix);
         }
 
+        // The word outgrew the 24-keystroke raw buffer: it cannot be one
+        // Vietnamese syllable, and `word_raw` no longer describes the whole
+        // token, so no restore rule may rebuild it. Show the literal
+        // keystrokes typed so far and pass the rest of the word through raw
+        // (the sticky path) — a long identifier must never lose a key.
+        if self.diff.word_raw.is_full() && !self.diff.english_sticky {
+            let (bs, _) = self.begin_raw_passthrough();
+            let _ = self.diff.prev_rendered.push(ch);
+            let _ = self.diff.diff_suffix.push(ch);
+            return (bs, &self.diff.diff_suffix);
+        }
+
         // Sticky English passthrough: the dictionary override already fired
         // for a prefix of this word, so the word is English input — the rest
         // of it must pass through raw. Re-transforming the suffix as
@@ -297,10 +325,12 @@ impl Diffable for UltraFastViEngine {
         let _ = self.diff.word_raw.try_push(ch);
         // First keystroke of the word: remember whether it started right
         // after a code char glued to the text before it (`feed_diff`,
-        // `a.b`) — the whole token is an identifier then, not Vietnamese.
+        // `a.b`) — the whole token is an identifier then, not Vietnamese —
+        // or inside a URL / path token (`/usr/share`, `github.com/x`).
         if self.diff.word_raw.len() == 1 {
             self.diff.word_after_code =
                 self.diff.last_sep_glued && is_code_glue_char(self.diff.last_sep);
+            self.diff.word_in_url = self.diff.token_url;
         }
         // Only save pre-keystroke screen state if the dictionary override
         // could possibly fire (word_raw >= 4 chars, the minimum dict word).
@@ -766,6 +796,14 @@ impl UltraFastViEngine {
             return self.commit_restoring_raw(retro_ok);
         }
 
+        // Contraction: the newest word is followed by exactly one glued
+        // apostrophe and this word is its suffix ("didn't", "it's", "we'll").
+        // The word before the apostrophe is English too, so it must show its
+        // literal keystrokes — the span rewrite covers both words.
+        if gate && self.is_contraction() {
+            return self.commit_contraction();
+        }
+
         // Raw-keystroke rules: a code identifier, an English word whose
         // doubled Telex tone key the cancel sequence collapsed ("off" →
         // "of"), an ALL-CAPS acronym the pipeline read as a rare syllable
@@ -776,6 +814,12 @@ impl UltraFastViEngine {
             && !self.diff.word_raw_overflowed
             && self.should_restore_code_or_english_token(boundary)
         {
+            return self.commit_restoring_raw(retro_ok);
+        }
+
+        // Hyphen compound: one side of a '-' glued pair being English makes
+        // the other side English too ("low-level", "backspace-arms").
+        if gate && !self.diff.word_raw_overflowed && self.hyphen_english_neighbor() {
             return self.commit_restoring_raw(retro_ok);
         }
 
@@ -824,8 +868,12 @@ impl UltraFastViEngine {
         let plain_english = retro_ok
             && !self.diff.word_raw_overflowed
             && (self.cancel_render_is_english_word()
-                || self.word_is_plain_english(&entry_rendered));
+                || self.word_is_plain_english(&entry_rendered)
+                || self.hyphen_compound_is_english(&entry_rendered));
         let entry_had_cancel = self.diff.word_had_cancel;
+        // The raw keystrokes no longer describe the whole word: the entry
+        // keeps its text and geometry but declines post-commit edits.
+        let entry_overflowed = self.diff.word_raw_overflowed;
 
         self.buf.clear();
         self.raw_len = 0;
@@ -872,6 +920,11 @@ impl UltraFastViEngine {
                 entry.had_cancel = true;
             }
         }
+        if entry_overflowed {
+            if let Some(entry) = self.diff.committed_mut(0) {
+                entry.editable = false;
+            }
+        }
         (retro.unwrap_or(0), &self.diff.diff_suffix)
     }
 
@@ -897,6 +950,11 @@ impl UltraFastViEngine {
     /// word (the caret offset 0 is just left of them).
     pub fn trailing_gap(&self) -> usize {
         self.diff.trailing_gap()
+    }
+
+    /// A word is on record (the caret offsets are measured against it).
+    pub fn has_committed_word(&self) -> bool {
+        self.diff.edit_history_len > 0
     }
 
     /// Caret offset (`caret_back`, screen chars from the end of the newest
@@ -1198,6 +1256,61 @@ impl UltraFastViEngine {
         }
     }
 
+    /// Commit a contraction ("didn't", "it's", "we'll"): the word before the
+    /// glued apostrophe shows its literal keystrokes and the current word
+    /// commits as typed. The plan rewrites the whole span (previous word +
+    /// apostrophe + this word); the ring entry of the previous word is
+    /// updated in place so it stays editable.
+    fn commit_contraction(&mut self) -> (usize, &str) {
+        let mut full_screen = crate::buffers::new_out_buffer();
+        let mut target = crate::buffers::new_out_buffer();
+        if let Some(prev) = self.diff.committed(0) {
+            let _ = full_screen.push_str(&prev.rendered);
+            let _ = full_screen.push('\'');
+            for &c in prev.raw.iter() {
+                let _ = target.push(c);
+            }
+            let _ = target.push('\'');
+        }
+        let _ = full_screen.push_str(&self.diff.diff_committed);
+        let _ = full_screen.push_str(&self.diff.prev_rendered);
+        for &c in self.diff.word_raw.iter() {
+            let _ = target.push(c);
+        }
+
+        let entry_raw = self.diff.word_raw.clone();
+        let mut entry_rendered = crate::buffers::new_out_buffer();
+        let _ = entry_rendered.push_str(&self.diff.diff_committed);
+        let _ = entry_rendered.push_str(&self.diff.prev_rendered);
+
+        // Clear the composing state, keeping the ring: the previous word is
+        // still on screen (now as typed) and stays editable.
+        self.buf.clear();
+        self.raw_len = 0;
+        self.pending_tone = None;
+        self.out_buf.clear();
+        self.committed.clear();
+        self.syl_structure.clear();
+        let ring = ::core::mem::take(&mut self.diff.edit_history);
+        let ring_start = self.diff.edit_history_start;
+        let ring_len = self.diff.edit_history_len;
+        self.diff.clear();
+        self.diff.edit_history = ring;
+        self.diff.edit_history_start = ring_start;
+        self.diff.edit_history_len = ring_len;
+
+        if let Some(prev) = self.diff.committed_mut(0) {
+            let mut rendered = crate::buffers::new_out_buffer();
+            for &c in prev.raw.iter() {
+                let _ = rendered.push(c);
+            }
+            prev.rendered = rendered;
+        }
+        let (bs, _) = Self::diff_into(&full_screen, &target, &mut self.diff.diff_suffix);
+        self.diff.push_committed(entry_raw, entry_rendered);
+        (bs, &self.diff.diff_suffix)
+    }
+
     /// Word-boundary restore-raw rule: `true` when the finished token is not a
     /// valid Vietnamese word and must show the literal keystrokes. A Vietnamese
     /// word token is one syllable, so a token that needed a V-C-V split inside
@@ -1220,18 +1333,28 @@ impl UltraFastViEngine {
         if self.diff.english_sticky {
             return false;
         }
+        // A V-C-V split inside this token glued several syllables together,
+        // which a single Vietnamese word never is.
+        if !self.diff.diff_committed.is_empty() {
+            return true;
+        }
         // Plain-letter differences come from intentional double-key cancels
         // ("masster" → "master", "off" → "of") — those must stay. The one
         // exception is a cancelled tone key between two `a` halves: that pair
         // was a failed `aa` → `â`, and an open `â` syllable is never a
         // Vietnamese word, so the literal keystrokes win ("rassa", "taxxa").
         if screen.is_ascii() {
-            return Self::cancelled_a_circumflex_pair(&self.diff.word_raw, self.mode);
-        }
-        // A V-C-V split inside this token glued several syllables together,
-        // which a single Vietnamese word never is.
-        if !self.diff.diff_committed.is_empty() {
-            return true;
+            if Self::cancelled_a_circumflex_pair(&self.diff.word_raw, self.mode) {
+                return true;
+            }
+            // A modifier key the pipeline swallowed after the last visible
+            // letter ("browserclaw" → "browsercla") leaves the render as a
+            // prefix of the keystrokes. One Vietnamese syllable has a single
+            // vowel group, so a multi-group ASCII render is an English word.
+            let mut raw_iter = raw.chars();
+            let is_prefix =
+                screen.chars().all(|c| raw_iter.next() == Some(c)) && raw_iter.next().is_some();
+            return is_prefix && vowel_runs(&screen) > 1;
         }
         crate::restore::rendered_syllable_needs_restore(&self.diff.prev_rendered)
     }
@@ -1248,13 +1371,173 @@ impl UltraFastViEngine {
     /// - an ALL-CAPS acronym whose render is a rare Vietnamese syllable
     ///   ("JIRA" → "JỈA").
     fn should_restore_code_or_english_token(&self, boundary: char) -> bool {
-        if self.diff.word_after_code || is_code_end_char(boundary) {
+        if self.diff.word_after_code || self.diff.word_in_url || is_code_end_char(boundary) {
+            return true;
+        }
+        // A camelCase / mixed-case token is an identifier, never Vietnamese
+        // typing (which only capitalizes the first letter).
+        if Self::is_mixed_case_token(&self.diff.word_raw) {
+            return true;
+        }
+        // No Vietnamese syllable starts with j, f or z: a render that does
+        // was transformed from an English word ("Jira" → "Jỉa"). Quick Start
+        // expands j to gi before the render, so "jira" stays "gira" there.
+        if self.render_starts_with_foreign_onset() {
+            return true;
+        }
+        if self.is_always_english_tech_word() {
+            return true;
+        }
+        if Self::is_english_suffixed_doubled_key(&self.diff.word_raw) {
             return true;
         }
         if crate::tables::is_english_doubled_key_word(&self.diff.word_raw) {
             return !self.cancel_render_is_english_word();
         }
         self.should_restore_acronym()
+    }
+
+    /// A token with a lowercase letter followed later by an uppercase one is
+    /// a camelCase identifier ("DeepSeek", "applyCompoundForwardDeletes").
+    fn is_mixed_case_token(raw: &[char]) -> bool {
+        let mut seen_lower = false;
+        for &c in raw {
+            if c.is_ascii_lowercase() {
+                seen_lower = true;
+            } else if seen_lower && c.is_ascii_uppercase() {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// An English word built from a doubled-Telex-key stem plus an inflection
+    /// ("diff" + "ed"/"s"/"ing"/"er", "off" + "s"): the cancel collapsed a
+    /// letter, but the raw keystrokes are real English and must show as typed.
+    fn is_english_suffixed_doubled_key(raw: &[char]) -> bool {
+        for suffix in DOUBLED_KEY_SUFFIXES {
+            let n = suffix.len();
+            if raw.len() <= n {
+                continue;
+            }
+            let stem = &raw[..raw.len() - n];
+            let tail = &raw[raw.len() - n..];
+            let matches = tail
+                .iter()
+                .zip(suffix.chars())
+                .all(|(&a, b)| a.eq_ignore_ascii_case(&b));
+            if matches && crate::tables::is_english_doubled_key_word(stem) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// The render starts with j, f or z (any case) and differs from the
+    /// literal keystrokes: no Vietnamese syllable has that onset, so the
+    /// pipeline transformed an English word.
+    fn render_starts_with_foreign_onset(&self) -> bool {
+        let first = self
+            .diff
+            .diff_committed
+            .chars()
+            .next()
+            .or_else(|| self.diff.prev_rendered.chars().next());
+        let foreign = matches!(
+            first.map(|c| c.to_ascii_lowercase()),
+            Some('j') | Some('f') | Some('z')
+        );
+        foreign && self.screen_differs_from_raw()
+    }
+
+    /// The word's render differs from its literal keystrokes.
+    fn screen_differs_from_raw(&self) -> bool {
+        let mut raw = self.diff.word_raw.iter().copied();
+        let mut screen = self
+            .diff
+            .diff_committed
+            .chars()
+            .chain(self.diff.prev_rendered.chars());
+        loop {
+            match (raw.next(), screen.next()) {
+                (None, None) => return false,
+                (Some(a), Some(b)) if a == b => {}
+                _ => return true,
+            }
+        }
+    }
+
+    /// An always-English tech word in lowercase, except right after the
+    /// Vietnamese "bánh" ("bánh tét" is a dish, not the English "test").
+    fn is_always_english_tech_word(&self) -> bool {
+        if !crate::tables::is_always_english_tech_word(&self.diff.word_raw) {
+            return false;
+        }
+        if !self.diff.word_raw.iter().all(|c| c.is_ascii_lowercase()) {
+            return false;
+        }
+        !self
+            .diff
+            .committed(0)
+            .is_some_and(|prev| str_eq_ignore_case(&prev.rendered, "bánh"))
+    }
+
+    /// The newest committed word is glued to this one by a single '-' and
+    /// reads as English ("low-level", "backspace-arms"): the compound's other
+    /// side is English too.
+    fn hyphen_english_neighbor(&self) -> bool {
+        let Some(prev) = self.diff.committed(0) else {
+            return false;
+        };
+        if prev.gap != 1 || prev.sep != '-' {
+            return false;
+        }
+        if self.prev_word_kind(prev) == PrevWordKind::English {
+            return true;
+        }
+        // A word typed as plain ASCII that is no Vietnamese syllable is
+        // English in a hyphen compound even when it is not in any table
+        // ("backspace").
+        prev.rendered.chars().all(|c| c.is_ascii_alphabetic())
+            && !crate::tables::is_common_vietnamese_syllable(&prev.rendered)
+            && !crate::tables::is_top_vietnamese_syllable(&prev.rendered)
+            && !crate::tables::is_vietnamese_loanword(&prev.rendered)
+    }
+
+    /// The current word is plain ASCII that is no Vietnamese syllable, and
+    /// the newest committed word is glued to it by a single '-': the hyphen
+    /// compound is English ("low-level"), so the Vietnamese-looking side in
+    /// front of it may be restored.
+    fn hyphen_compound_is_english(&self, screen: &str) -> bool {
+        let Some(prev) = self.diff.committed(0) else {
+            return false;
+        };
+        if prev.gap != 1 || prev.sep != '-' {
+            return false;
+        }
+        screen.chars().all(|c| c.is_ascii_alphabetic())
+            && !crate::tables::is_common_vietnamese_syllable(screen)
+            && !crate::tables::is_top_vietnamese_syllable(screen)
+    }
+
+    /// A contraction: the newest committed word is followed by exactly one
+    /// glued apostrophe and the current word is a contraction suffix
+    /// ("didn't", "it's", "I'm", "we'll", "they're").
+    fn is_contraction(&self) -> bool {
+        let Some(prev) = self.diff.committed(0) else {
+            return false;
+        };
+        if prev.gap != 1 || prev.sep != '\'' {
+            return false;
+        }
+        let raw = &self.diff.word_raw;
+        CONTRACTION_SUFFIXES.iter().any(|suffix| {
+            raw.len() == suffix.chars().count()
+                && raw
+                    .iter()
+                    .zip(suffix.chars())
+                    .all(|(&a, b)| a.eq_ignore_ascii_case(&b))
+        })
     }
 
     /// A double-press cancel leaves the cancelled word on screen ("carr"
@@ -1389,7 +1672,12 @@ impl UltraFastViEngine {
         if prev.had_cancel || Self::is_all_caps_token(&prev.raw) {
             return PrevWordKind::Neutral;
         }
-        // Restored words are on screen as typed.
+        // Restored words are on screen as typed. A word whose raw no longer
+        // covers its text (it outgrew the keystroke buffer) says nothing
+        // about the sentence language.
+        if prev.raw.len() < prev.rendered.chars().count() {
+            return PrevWordKind::Neutral;
+        }
         if prev.raw.len() != prev.rendered.chars().count()
             || !prev
                 .raw
@@ -1473,12 +1761,11 @@ impl UltraFastViEngine {
         // A render that is a top Vietnamese syllable ("nó", "vẻ", "bú") is a
         // word Vietnamese speakers type all the time: the rarity score is an
         // inventory count, not a frequency, so it cannot judge these. Only a
-        // genuinely English sentence ("the car") restores them.
+        // curated English FUNCTION word right before it, separated by exactly
+        // one space, restores it ("the car", "my car is red"). Any other
+        // English-looking neighbour ("main, có") leaves the Vietnamese word.
         if crate::tables::is_top_vietnamese_syllable(&screen) {
-            return self
-                .diff
-                .newest_committed()
-                .is_some_and(|prev| self.prev_word_kind(prev) == PrevWordKind::English);
+            return self.english_function_context() || self.english_sentence_chain();
         }
         // A render the Vietnamese word list never contains (pẻ, ák) is not a
         // Vietnamese word at all: the English reading wins everywhere.
@@ -1496,6 +1783,69 @@ impl UltraFastViEngine {
                 PrevWordKind::Vietnamese => false,
             },
         }
+    }
+
+    /// The word right before the current one is a curated English FUNCTION
+    /// word, separated by exactly one space ("the car", "my car is red").
+    ///
+    /// A host that does not report separators leaves `gap == 0`: assume the
+    /// plain space, the only separator a sentence ever puts there.
+    fn english_function_context(&self) -> bool {
+        self.diff.newest_committed().is_some_and(|prev| {
+            Self::one_space_gap(prev) && crate::tables::is_english_function_word(&prev.rendered)
+        })
+    }
+
+    /// The two words before the current one both read as English, one of
+    /// them a function word, separated by single spaces ("it is the best
+    /// car"): the sentence is English, so a
+    /// top Vietnamese reading is the wrong one. One English word alone can
+    /// sit inside a Vietnamese sentence ("dùng main có"), which is why the
+    /// chain needs the second word.
+    fn english_sentence_chain(&self) -> bool {
+        let Some(prev) = self.diff.committed(0) else {
+            return false;
+        };
+        if !Self::one_space_gap(prev) || self.prev_word_kind(prev) != PrevWordKind::English {
+            return false;
+        }
+        let Some(older) = self.diff.committed(1) else {
+            return false;
+        };
+        if !Self::one_space_gap(older) {
+            return false;
+        }
+        // Two English content words are no proof: Vietnamese developers
+        // write "deploy server nó", "test case có", "build fail cả". One of
+        // the two must be a curated function word ("the best car").
+        if !crate::tables::is_english_function_word(&prev.rendered)
+            && !crate::tables::is_english_function_word(&older.rendered)
+        {
+            return false;
+        }
+        // A one- or two-letter fragment ("ng", "d") is no sentence-language
+        // signal of its own: only a curated function word counts.
+        if older.rendered.chars().count() <= 2 {
+            return crate::tables::is_english_function_word(&older.rendered);
+        }
+        self.prev_word_kind(older) == PrevWordKind::English
+            || Self::is_plain_english_ascii(&older.rendered)
+    }
+
+    /// A word on screen as plain ASCII letters that is no Vietnamese syllable:
+    /// in a chain of such words the sentence is English ("freezes its").
+    fn is_plain_english_ascii(rendered: &str) -> bool {
+        rendered.chars().count() >= 3
+            && rendered.chars().all(|c| c.is_ascii_alphabetic())
+            && !crate::tables::is_common_vietnamese_syllable(rendered)
+            && !crate::tables::is_top_vietnamese_syllable(rendered)
+            && !crate::tables::is_vietnamese_loanword(rendered)
+    }
+
+    /// A single space separates the word from the next one (`gap == 0` when
+    /// the host never reported separators).
+    fn one_space_gap(word: &CommittedWord) -> bool {
+        word.gap == 0 || (word.gap == 1 && word.sep == ' ')
     }
 
     /// Retroactive English fix. The word being committed is English, so the
@@ -1529,9 +1879,12 @@ impl UltraFastViEngine {
             // removed, so it must never be restored back to that raw. A top
             // Vietnamese syllable ("vẻ", "nó", "cả") is never restored either,
             // whatever the score says: it is a word the user very likely
-            // meant, so it counts as a non-restorable entry.
+            // meant, so it counts as a non-restorable entry. Across a single
+            // '-' the top protection yields: a hyphen compound is one English
+            // word ("low-level"), so its Vietnamese-looking half is English.
             let restorable = !entry.had_cancel
-                && !crate::tables::is_top_vietnamese_syllable(&entry.rendered)
+                && (entry.sep == '-'
+                    || !crate::tables::is_top_vietnamese_syllable(&entry.rendered))
                 && (entry.rendered.chars().count() != entry.raw.len()
                     || !entry
                         .raw

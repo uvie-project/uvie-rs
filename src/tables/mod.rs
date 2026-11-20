@@ -24,6 +24,7 @@
 mod coda;
 mod english;
 mod english_context;
+mod english_manual;
 mod glide;
 mod nucleus;
 mod onset;
@@ -35,6 +36,7 @@ pub use english_context::{
     english_ambiguous_score, is_common_vietnamese_syllable, is_english_ambiguous_word,
     is_english_context_word, is_english_doubled_key_word, is_vietnamese_loanword,
 };
+pub use english_manual::{is_always_english_tech_word, is_english_function_word};
 pub use glide::{is_vowel_base, onset_is_gi, onset_is_qu};
 pub use nucleus::{
     is_legal_nucleus, nucleus_allows_coda, nucleus_tone_target, rhyme_coda_compatible,

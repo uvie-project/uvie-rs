@@ -137,6 +137,12 @@ impl EngineSession {
         self.engine.trailing_gap()
     }
 
+    /// A committed word is on record: the caret offsets are measured against
+    /// it. Without one, a separator at the caret carries no geometry.
+    pub fn has_committed(&self) -> bool {
+        self.engine.has_committed_word()
+    }
+
     /// Drop all composing + committed state (app switch, caret jump, reset).
     /// Must use the diff-aware reset: the plain core `clear()` leaves the
     /// committed-word ring intact, so a later keystroke could still "edit"

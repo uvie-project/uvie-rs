@@ -363,6 +363,51 @@ impl UltraFastViEngine {
         (bs, &self.diff.diff_suffix)
     }
 
+    /// Switch a word that outgrew the raw buffer to literal passthrough.
+    ///
+    /// `word_raw` holds the whole word so far (24 keystrokes) and the screen
+    /// holds its render; the render is rewritten to the keystrokes and the
+    /// rest of the word passes through raw (the sticky path), so a long
+    /// identifier keeps every key the user typed. `word_raw_overflowed` is
+    /// set because the buffer can no longer describe the finished word, which
+    /// also disables the restore rules that would rebuild it.
+    ///
+    /// Returns the backspaces that erase the rendered word; the caller appends
+    /// the keystrokes to the returned suffix (they are on screen already).
+    pub(crate) fn begin_raw_passthrough(&mut self) -> (usize, &str) {
+        let mut screen = new_out_buffer();
+        let _ = screen.push_str(&self.diff.diff_committed);
+        let _ = screen.push_str(&self.diff.prev_rendered);
+        let mut target = new_out_buffer();
+        for &c in self.diff.word_raw.iter() {
+            let _ = target.push(c);
+        }
+        let (bs, _) = Self::diff_into(&screen, &target, &mut self.diff.diff_suffix);
+
+        self.diff.word_raw_overflowed = true;
+        self.diff.english_fallback = None;
+        // Commit the literal keystrokes and start the raw tail after them.
+        self.diff.diff_committed.clear();
+        let _ = self.diff.diff_committed.push_str(&target);
+        self.diff.prev_rendered.clear();
+        self.diff.prev_inner_render.clear();
+        self.diff.raw_chars.clear();
+        self.diff.key_log.clear();
+        self.diff.last_valid_out.clear();
+        self.diff.last_valid_raw_len = 0;
+        self.diff.last_valid_coda_start = 0;
+        self.buf.clear();
+        self.raw_len = 0;
+        self.pending_tone = None;
+        self.out_buf.clear();
+        self.committed.clear();
+        self.syl_structure.clear();
+        self.diff.snapshots = [const { None }; 24];
+        self.diff.snapshot_count = 0;
+        self.diff.english_sticky = true;
+        (bs, &self.diff.diff_suffix)
+    }
+
     /// Rebuild the composing portion of the engine from a lossless keystroke log.
     ///
     /// Resets the core engine and the diff *composing* state, then replays `log`

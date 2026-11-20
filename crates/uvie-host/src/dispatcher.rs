@@ -294,9 +294,13 @@ impl Dispatcher {
             self.reset();
         }
         // Right of the anchor the caret is only tracked through the trailing
-        // separators; anywhere else is an unseen caret jump.
+        // separators; anywhere else is an unseen caret jump. Without a
+        // committed word there is no anchor to measure against, and the
+        // separator history (the URL / path / code token state) is still
+        // valid - a line that starts with `/usr/share` keeps it.
         if !self.session.is_composing()
             && self.caret_back < 0
+            && self.session.has_committed()
             && self.caret_back != -(self.session.trailing_gap() as isize)
         {
             self.reset();
@@ -384,6 +388,12 @@ impl Dispatcher {
         {
             self.session.note_separator(sep);
             self.caret_back -= 1;
+        } else if self.caret_back < 0 && !self.session.has_committed() {
+            // Nothing committed to measure the caret against (a separator at
+            // the start of a line): the engine still needs every separator
+            // char - they carry the URL / path / code token state - so keep
+            // the history instead of resetting it.
+            self.session.note_separator(sep);
         } else {
             self.reset();
         }

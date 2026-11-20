@@ -167,6 +167,28 @@ pub struct DiffState {
     /// the second `r` cancelled the hỏi). The user asked for the cancelled
     /// render, so a commit must not restore the keystrokes that produced it.
     pub word_had_cancel: bool,
+    /// The current whitespace-delimited token is a URL / path / code token:
+    /// it contains `://`, starts with `/`, `~/` or `./`, has a `.` before a
+    /// `/` (`github.com/x`), or a code char glued to its text (`signed-by=`).
+    /// Every word inside it shows its literal keystrokes.
+    pub token_url: bool,
+    /// Chars seen in the current token since the last whitespace (separator
+    /// chars only: the words themselves are not reported).
+    pub token_len: u8,
+    /// A word was committed inside the current token (the token does not
+    /// start with the next separator char: `tieengs/vieetj` is a word and a
+    /// slash, not a path).
+    pub token_has_word: bool,
+    /// First char of the current token (`/`, `~`, `.`, `[`, ...).
+    pub token_first: char,
+    /// The last two chars of the current token, for the `://` sequence.
+    pub token_prev: char,
+    pub token_prev2: char,
+    /// A `.` was seen in the current token (`github.com/x`).
+    pub token_dot: bool,
+    /// The composing word started inside a URL / path token: it is an
+    /// identifier, not Vietnamese.
+    pub word_in_url: bool,
 }
 
 impl Default for DiffState {
@@ -204,6 +226,14 @@ impl DiffState {
             word_since_sep: false,
             word_after_code: false,
             word_had_cancel: false,
+            token_url: false,
+            token_len: 0,
+            token_has_word: false,
+            token_first: '\0',
+            token_prev: '\0',
+            token_prev2: '\0',
+            token_dot: false,
+            word_in_url: false,
         }
     }
 
@@ -240,13 +270,21 @@ impl DiffState {
         self.word_since_sep = false;
         self.word_after_code = false;
         self.word_had_cancel = false;
+        self.word_in_url = false;
     }
 
-    /// Drop the separator history (`last_sep` / glued state) — full reset
-    /// paths only, never an ordinary word commit.
+    /// Drop the separator history (`last_sep` / glued state) and the current
+    /// token — full reset paths only, never an ordinary word commit.
     pub fn clear_separator(&mut self) {
         self.last_sep = '\0';
         self.last_sep_glued = false;
+        self.token_url = false;
+        self.token_len = 0;
+        self.token_has_word = false;
+        self.token_first = '\0';
+        self.token_prev = '\0';
+        self.token_prev2 = '\0';
+        self.token_dot = false;
     }
 
     /// Push a committed word onto the ring (oldest evicted when full).
@@ -269,6 +307,9 @@ impl DiffState {
         });
         self.edit_history_len += 1;
         self.word_since_sep = true;
+        // The token holds a word now, so its next separator char is not the
+        // token's first character.
+        self.token_has_word = true;
     }
 
     /// Ring slot of the entry at `step` (0 = newest, growing older).
@@ -317,10 +358,56 @@ impl DiffState {
         self.last_sep = ch;
         self.last_sep_glued = glued;
         self.word_since_sep = false;
+        self.note_token_char(ch, glued);
         if let Some(w) = self.committed_mut(0) {
             w.gap += 1;
             w.sep = ch;
         }
+    }
+
+    /// Track the current whitespace-delimited token so a word inside a URL,
+    /// path or code token can show its literal keystrokes (`/usr/share`,
+    /// `https://github.com/x/...`, `github.com/x`). Whitespace starts a new
+    /// token; every other separator char grows the current one.
+    fn note_token_char(&mut self, ch: char, glued: bool) {
+        if matches!(ch, ' ' | '\t' | '\n' | '\r') {
+            self.token_url = false;
+            self.token_len = 0;
+            self.token_has_word = false;
+            self.token_first = '\0';
+            self.token_prev = '\0';
+            self.token_prev2 = '\0';
+            self.token_dot = false;
+            return;
+        }
+        let first = self.token_len == 0 && !self.token_has_word;
+        if first {
+            self.token_first = ch;
+        }
+        if ch == '/' {
+            // A leading `/` ("/usr"), `~/` or `./`, a `.` before a `/`
+            // ("github.com/x"), and the `://` of a scheme.
+            if first
+                || (self.token_len == 1 && matches!(self.token_first, '~' | '.'))
+                || self.token_dot
+                || (self.token_prev == '/' && self.token_prev2 == ':')
+            {
+                self.token_url = true;
+            }
+        } else if (first && matches!(ch, '`' | '@' | '_' | '=' | '\\' | '$'))
+            || (glued && crate::diff::is_code_glue_char(ch))
+        {
+            // A code marker opening the token ("`/usr/...") or a code char
+            // glued to its text ("signed-by=", "a.b") makes the rest of the
+            // token an identifier.
+            self.token_url = true;
+        }
+        if ch == '.' {
+            self.token_dot = true;
+        }
+        self.token_prev2 = self.token_prev;
+        self.token_prev = ch;
+        self.token_len = self.token_len.saturating_add(1);
     }
 
     /// A separator char right after the newest committed word was deleted.

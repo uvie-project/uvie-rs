@@ -394,6 +394,24 @@ uvie-mac consumes the boundary key whenever the plan is non-empty, applies
 the plan, then re-posts the separator (text for Space/punctuation, the
 original keycode + flags for Enter).
 
+### Accuracy round 3 (2026-11)
+Measured on `crates/uvie-host/tests/data/vi_mix*.txt` (100 chat/tech
+Vietnamese sentences, tone typed at the end and after the vowel; locked to 0
+wrong by `vi_corpus_tests.rs`) and a 17k-word English/tech prose sample.
+
+- Top syllables restore only after a curated English function word
+  (`src/tables/english_manual.rs`) or a two-word English chain that contains
+  one ("the best car"); "deploy server nó", "vào main, có" stay Vietnamese.
+- Always-English tech words (test, list, host, cost, boost) restore in any
+  context except "bánh tét".
+- j/f/z onsets, camelCase tokens, URL/path tokens (`://`, leading `/`, `~/`,
+  `./`, `x.y/`; tracked per whitespace token in `DiffState::note_token_char`),
+  hyphen compounds with an English side, and contractions ("didn't") show
+  their literal keys.
+- A doubled-key stem plus an English suffix ("diffed", "diffs") restores.
+- A word that fills the 24-key raw buffer switches to literal passthrough
+  (`begin_raw_passthrough`) instead of dropping keys.
+
 ### Top Vietnamese syllables (2026-11)
 The rarity score is an inventory count, not a frequency: the most common
 particles score as rare there (nó 1, vẻ 7, sẽ 8, mã 22, cả 21, bú 0), so

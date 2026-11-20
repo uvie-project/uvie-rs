@@ -1,0 +1,100 @@
+Hôm nay tôi đi học muộn vì trời mưa rất to, đường phố ngập nước.
+Bạn có biết quán cà phê nào ngon ở gần đây không? Mình muốn ngồi làm việc một lúc.
+Chúng tôi đã hoàn thành dự án trước thời hạn, khách hàng rất hài lòng với kết quả.
+Anh ấy rút tiền ở ngân hàng rồi mua một chiếc áo sơ mi trắng.
+Mẹ bảo em ăn cơm xong thì nhớ rửa bát và quét nhà giúp mẹ nhé.
+Thời tiết hôm nay rét quá, lát nữa mình sẽ ghé qua nhà bạn.
+Các thí sinh cần có mặt tại phòng thi lúc bảy giờ sáng.
+Ông bà tôi sống ở quê, mỗi năm chúng tôi về thăm vài lần.
+Môn toán học kỳ này khó hơn kỳ trước, nhưng tôi vẫn đạt điểm cao.
+Em ơi, ít nhất hãy gọi điện cho anh một lần trước khi đi.
+Cô giáo dặn cả lớp phải ôn bài kỹ, đừng để đến sát ngày mới học.
+Tôi đã deploy bản mới lên server test, anh check giúp em nhé.
+File này bị lỗi rồi, ok để mình sửa lại sau.
+Em nó có vẻ mệt, cả ngày nay chưa ăn gì cả.
+Ưm, để mình xem lại rồi báo bạn sau nha.
+Ừ, mai mình gặp nhau ở quán cũ nhé.
+Anh push code lên rồi đó, em review giúp anh cái PR này với.
+Cái bug này khó tái hiện lắm, chắc phải thêm log mới biết.
+Mình đã fix xong lỗi crash khi mở app, giờ chạy ổn rồi.
+Sáng mai có meeting lúc chín giờ, mọi người nhớ vào đúng giờ nhé.
+Bạn gửi mình cái link tài liệu đó được không?
+Hệ thống CI/CD chạy mất gần mười phút mới xong.
+Dùng API này thì nhớ thêm token vào header nhé.
+Cả nhà mình đều thích ăn phở bò buổi sáng.
+Nó nói với tôi là nó sẽ không đến nữa.
+Có vẻ như trời sắp mưa, mang theo áo mưa đi em.
+Tôi không biết phải làm sao cho đúng nữa.
+Chị ấy làm việc ở công ty phần mềm được ba năm rồi.
+Mấy hôm nay mình bận quá, không có thời gian đọc sách.
+Thầy giáo khen bài văn của em viết rất hay.
+Đừng lo, mọi chuyện rồi sẽ ổn thôi mà.
+Bé nhà mình mới biết đi, suốt ngày chạy khắp nhà.
+Bạn thử restart máy xem có hết lỗi không.
+Mình vừa merge nhánh feature vào main, có conflict nhỏ nhưng đã xử lý.
+Bản release mới có nhiều thay đổi về giao diện.
+Ai đang dùng máy in ở tầng hai vậy?
+Ngày mai là sinh nhật mẹ, mình định mua hoa tặng mẹ.
+Tôi thấy cách làm này không ổn lắm, mình bàn lại nhé.
+Đội mình cần thêm một người làm backend.
+Hôm qua tôi ngủ muộn nên sáng nay dậy không nổi.
+Quyển sách này hay lắm, bạn nên đọc thử.
+Mình gửi email cho khách rồi nhưng chưa thấy trả lời.
+Cái máy này chạy chậm quá, chắc phải nâng cấp RAM.
+Lúc nãy em gọi mà anh không nghe máy.
+Mỗi người một việc thì sẽ nhanh xong hơn.
+Bố mẹ tôi sống ở Hà Nội, còn tôi ở Sài Gòn.
+Hai đứa nó cãi nhau suốt, chẳng ai chịu ai.
+Bạn có muốn đi xem phim với mình tối nay không?
+Tôi rất vui vì được làm việc cùng mọi người.
+Đây là lần đầu tiên tôi đến thành phố này.
+Mình đang viết test cho module thanh toán.
+Lỗi này xuất hiện khi người dùng bấm nút quá nhanh.
+Anh ơi, cái build hôm qua bị fail ở bước nào vậy?
+Để em tạo ticket trên Jira rồi assign cho anh.
+Code này chạy được nhưng hơi khó đọc, nên refactor lại.
+Tối nay mình nấu canh chua cá lóc nhé.
+Trời ơi, sao mà nóng thế không biết.
+Con mèo nhà hàng xóm cứ sang nhà mình ăn vụng.
+Nghe nói quán đó mới mở, đồ ăn ngon mà giá rẻ.
+Tôi đã đặt vé máy bay đi Đà Nẵng vào thứ sáu.
+Mùa hè năm nay cả gia đình sẽ đi biển.
+Bài hát này làm tôi nhớ lại thời sinh viên.
+Cuối tuần này bạn có rảnh không?
+Mình chưa hiểu ý bạn lắm, bạn nói rõ hơn được không?
+Cứ từ từ thôi, không cần vội đâu.
+Sau khi cài đặt xong, bạn cần khởi động lại máy.
+Mật khẩu phải có ít nhất tám ký tự.
+Tài khoản của bạn đã bị khóa tạm thời.
+Vui lòng kiểm tra lại thông tin trước khi gửi.
+Chúng tôi sẽ liên hệ lại với bạn trong thời gian sớm nhất.
+Tôi nghĩ là nên dùng database khác cho phần này.
+Bạn xem giúp mình cái screenshot này với, có gì lạ không?
+Hôm nay deadline rồi mà vẫn chưa xong, căng quá.
+Mình sẽ update tiến độ vào cuối ngày nhé.
+Anh chị em trong team đều rất nhiệt tình.
+Ăn sáng chưa? Đi ăn bún chả không?
+Giá xăng lại tăng nữa rồi.
+Trường của em ở gần chợ, đi bộ năm phút là tới.
+Bà nội tôi năm nay đã ngoài tám mươi tuổi.
+Tôi cố gắng mỗi ngày đọc ít nhất mười trang sách.
+Bạn nhớ mang theo chứng minh thư khi đi làm thủ tục.
+Cái áo này đẹp quá, mua ở đâu vậy?
+Con đường này về đêm rất vắng vẻ.
+Nó có vẻ không thích món này lắm.
+Vẻ đẹp của vùng núi phía bắc làm tôi say mê.
+Cả hai đều có lý, khó mà chọn được.
+Mình nghĩ cả team nên họp lại để thống nhất.
+Có ai biết sửa máy lạnh không?
+Cái này có cần thiết không vậy?
+Tôi sẽ cố gắng hết sức.
+Em bé đang ngủ, mọi người nói nhỏ thôi.
+Ngày nào nó cũng dậy sớm tập thể dục.
+Thôi, mình về trước nhé, mai gặp lại.
+Bạn thấy sao, có ổn không?
+Mình làm xong rồi, bạn kiểm tra lại giúp nhé.
+Hình như bạn nhầm số điện thoại rồi.
+Anh ấy là người rất tốt bụng và hài hước.
+Tôi muốn học thêm tiếng Anh để đi du học.
+Lúc đó tôi chỉ biết đứng im, không nói được gì.
+Mình ghi chú lại mấy ý chính trong cuộc họp rồi.
