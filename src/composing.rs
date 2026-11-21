@@ -319,7 +319,12 @@ impl Composable for UltraFastViEngine {
         // "nguwocs" produces "ngứoc" instead of "ngước".
         if b == b'o' && !self.buf.is_empty() {
             let prev = self.buf.get(self.buf.len() - 1);
-            if prev.base == b'u' && prev.flags & F_HORN != 0 && prev.flags & F_CIRCUMFLEX == 0 {
+            // A standalone 'w' already rendered as ư is the same ư (base
+            // 'w'), so "giw" + "o" forms "giươ" like "uw" + "o" does.
+            if matches!(prev.base, b'u' | b'w')
+                && prev.flags & F_HORN != 0
+                && prev.flags & F_CIRCUMFLEX == 0
+            {
                 let promoted = Syl::literal(b'o', caps).with_horn();
                 self.buf.push(promoted);
                 self.reapply_tone_after_nucleus_change();

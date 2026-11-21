@@ -1784,6 +1784,18 @@ impl UltraFastViEngine {
     /// "DESC" → "DÉC") is English. A common syllable keeps the word
     /// Vietnamese ("VIEETJ" renders "VIỆT").
     fn should_restore_acronym(&self) -> bool {
+        // A Caps Lock Vietnamese run ("TIẾNG VIỆT HUẾ"): the newest committed
+        // word is an ALL-CAPS token one space away whose render carries
+        // Vietnamese marks, so this word is the next word of the run, not an
+        // acronym.
+        if let Some(prev) = self.diff.newest_committed() {
+            if Self::is_all_caps_token(&prev.raw)
+                && Self::one_space_gap(prev)
+                && !prev.rendered.is_ascii()
+            {
+                return false;
+            }
+        }
         let raw = &self.diff.word_raw;
         if !(2..=5).contains(&raw.len()) || !raw.iter().all(|c| c.is_ascii_uppercase()) {
             return false;

@@ -2,7 +2,7 @@
 
 use crate::engine::UltraFastViEngine;
 use crate::modes::IS_VOWEL;
-use crate::syllable::{F_CAPS, F_CIRCUMFLEX, F_HORN, F_LITERAL, Syl};
+use crate::syllable::{F_CAPS, F_CIRCUMFLEX, F_HORN, F_LITERAL, F_TONE_SET, Syl};
 use crate::tone_handler::ToneHandler;
 use crate::validation::SyllableValidator;
 
@@ -120,7 +120,13 @@ impl TelexModifier for UltraFastViEngine {
         // cancellation like "uoww" → "uow" should be handled by the
         // cancellation pass, not consumed silently).
         let prev_is_w = self.raw_len >= 2 && self.raw[self.raw_len - 2] == b'w';
-        if candidate_count > 1 && !prev_is_w {
+        // A standalone 'w' already rendered as ư (base 'w' + F_HORN inside
+        // the nucleus) is a horned vowel too: after "giw" + "o" auto-horns
+        // the o, a following 'w' is the redundant ươ shorthand ("giwowng" →
+        // "giương"), not a single-candidate cancel.
+        let horned_w_in_nucleus = (nucleus_start..nucleus_end)
+            .any(|i| self.buf.get(i).base == b'w' && self.buf.get(i).flags & F_HORN != 0);
+        if (candidate_count > 1 || horned_w_in_nucleus) && !prev_is_w {
             let all_horned =
                 (0..candidate_count).all(|idx| self.buf.get(candidates[idx]).flags & F_HORN != 0);
             if all_horned && self.is_valid_vietnamese() {
@@ -226,8 +232,14 @@ impl TelexModifier for UltraFastViEngine {
             }
         }
 
-        // No match - standalone 'w' becomes ư at onset.
+        // No match - standalone 'w' becomes ư at onset. A buffer that is
+        // exactly the "gi" onset (g + plain i, nothing after) counts too:
+        // "giw" -> "giư" ("giwx" -> "giữ", "giwax" -> "giữa").
         let onset_len = self.onset_len();
+        let bare_gi_onset = n == 2
+            && self.buf.get(0).base == b'g'
+            && self.buf.get(1).base == b'i'
+            && self.buf.get(1).flags & (F_HORN | F_CIRCUMFLEX | F_TONE_SET | F_LITERAL) == 0;
         // A second `w` right after a `w` that stayed a literal letter is the
         // cancel sequence for a modifier that never applied: consume it
         // ("neww" → "new", "awwa" → "awa"). Only in a syllable that carries no
@@ -239,7 +251,7 @@ impl TelexModifier for UltraFastViEngine {
             let prev = self.buf.get(n - 1);
             prev.base == b'w' && prev.flags & (F_HORN | F_CIRCUMFLEX | F_LITERAL) == 0
         };
-        if onset_len == n {
+        if onset_len == n || bare_gi_onset {
             let mut syl = Syl::literal(b'w', caps);
             syl.flags |= F_HORN;
             syl.out = if caps { 'Ư' } else { 'ư' };

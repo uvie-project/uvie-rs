@@ -490,6 +490,57 @@ Measured: English corpus (`zz_corpus`) 169 → 176 wrong (the sentence rule keep
 has a Vietnamese word); Vietnamese mixed corpus (`vi_corpus_tests.rs`) stays at
 0 wrong. Tests: `tests/context_mode_tests.rs`.
 
+### Syllable audit (2026-11): VNI deferred digits, gi+w, Caps Lock runs
+`examples/audit_syllables.rs` types every distinct syllable of the 22k word
+list (5,844) through `feed_diff` in 11 keystroke orders (Telex: tone at the
+end / after the nucleus / inline / before the modifier, modifiers at the end,
+tone then modifiers, single-w "uow", bare-w shorthand; VNI: tone at the end,
+all digits at the end, tone after the nucleus), alone, inside a Vietnamese
+sentence and inside a Caps Lock run, lower/Title/UPPER case, plus a backspace
+round trip (type, erase k keys, retype). Failure rows go to
+`/tmp/uvie_audit/*.tsv`. `examples/probe.rs` prints the screen after every
+key (`<` = backspace). Run both before and after any change to the modifier
+or commit rules:
+
+```bash
+rtk cargo run --release --example audit_syllables
+rtk cargo run --release --example probe -- vni "tieng61 " "u7o77"
+```
+
+Fixed by the first audit (tests: `tests/audit_fixes_tests.rs`):
+
+- **VNI modifier digits target the nucleus** (`src/modifier/vni.rs`), not
+  the last buffer entry: "bien6" -> "biên", "tieng61" -> "tiếng",
+  "duoc975" -> "được" (was literal for every digits-at-the-end spelling:
+  1,998 of 2,961 syllables). Candidates are tried last to first with an
+  `is_valid_vietnamese()` check; an adjacent vowel still takes the digit
+  mid-growth; a digit with no target stays literal ("2024").
+- **VNI "u7o7"**: the o is auto-horned after ư, so the second 7 is redundant
+  and consumed ("chu7o7ng" -> "chương", was literal). [u,o]+7 follows the
+  Telex w rule: both horned when closed, only the o when open ("thuo73" ->
+  "thuở").
+- **VNI double-digit cancel keeps the digit** ("a66" -> "a6", "d99" -> "d9",
+  "u7o77" -> "uo7"; was "a"/"d"). Only a true double press of the SAME digit
+  leaves it ("dd9" -> "d" and "aa8" -> "ă" are unchanged).
+- **Telex bare `w` after the "gi" onset**: "giwx" -> "giữ", "giwowngf" ->
+  "giường" (the i of a bare "gi" counted as the nucleus).
+- **Caps Lock runs** (`should_restore_acronym`): a word right after an
+  ALL-CAPS word whose render carries Vietnamese marks is the next word of
+  the run, not an acronym ("TIẾNG VIỆT HUỆ"; 2,443 of 5,844 syllables were
+  restored to raw keys). A lone caps word, or one after lowercase or ASCII
+  text, keeps the acronym rule ("dùng JIRA", "API JIRA").
+
+Remaining audit failures are deliberate: dictionary words that win over a
+minority spelling ("boots", "keeps", "theme", "homo", "these", "there" - type
+the modifier next to the vowel, "theem"), oo -> ô ("boong" needs "booong"),
+and "kỉch" (hỏi with a ch coda is not a Vietnamese rhyme). The first word of
+a Caps Lock run is still judged alone ("MANGS " -> "MANGS " when the syllable
+is not a common one).
+
+Performance: same-session A/B against master shows no measurable change. The
+per-keystroke `ComposingSnapshot` (856 bytes) is 5-20% of `feed_diff`; it buys
+O(1) backspace and was left alone (about 200 ns per keystroke in total).
+
 ### English Dictionary Override (2026-08, expanded 2026-10)
 `src/tables/english.rs` — 18,039 common English words that produce garbled
 Vietnamese+English hybrids (e.g. `character`→`chẩcter`, `safari`→`sầri`,
