@@ -1414,3 +1414,124 @@ fn contractions_still_restore_the_word_before_the_apostrophe() {
     let mut d = dispatcher();
     assert_eq!(replay(&mut d, "didn't "), "didn't ");
 }
+
+/// Apply a dispatcher plan at a simulated caret, run the app's native
+/// effect for a passed key, and flag any Text op containing ','.
+fn drive_with_native(
+    d: &mut Dispatcher,
+    key: KeyEvent,
+    screen: &mut Vec<char>,
+    caret: &mut usize,
+    comma_in_plan: &mut bool,
+    native: impl Fn(&mut Vec<char>, &mut usize),
+) {
+    let plan = match d.handle(key, &Context::default()) {
+        Dispatch::Consume(plan) => plan,
+        Dispatch::Pass(plan) => {
+            native(screen, caret);
+            plan
+        }
+    };
+    for action in &plan {
+        if let InputAction::Text(t) = action {
+            if t.contains(',') {
+                *comma_in_plan = true;
+            }
+        }
+    }
+    apply_at(screen, caret, &plan);
+}
+
+/// Right at the end of the field does not move the real caret, but it drifts
+/// the tracked one: a later Backspace that natively deletes the comma must go
+/// through the conservative separator removal, not the exact undo (which
+/// would wrongly undo the surviving space and record ',' as known).
+#[test]
+fn arrow_drift_disables_exact_separator_undo() {
+    let mut d = dispatcher();
+    let mut screen: Vec<char> = Vec::new();
+    let mut caret = 0usize;
+    let mut comma_in_plan = false;
+
+    for ch in "this, ".chars() {
+        drive_with_native(
+            &mut d,
+            KeyEvent::char(ch),
+            &mut screen,
+            &mut caret,
+            &mut comma_in_plan,
+            |s, c| {
+                s.insert(*c, ch);
+                *c += 1;
+            },
+        );
+    }
+    // Right at the field end: the tracked caret drifts, the real one stays.
+    drive_with_native(
+        &mut d,
+        KeyEvent::right(),
+        &mut screen,
+        &mut caret,
+        &mut comma_in_plan,
+        |_, _| {},
+    );
+    // Left: the real caret lands between ',' and ' '.
+    drive_with_native(
+        &mut d,
+        KeyEvent::left(),
+        &mut screen,
+        &mut caret,
+        &mut comma_in_plan,
+        |_, c| {
+            *c = c.saturating_sub(1);
+        },
+    );
+    // Backspace deletes the comma natively.
+    drive_with_native(
+        &mut d,
+        KeyEvent::backspace(),
+        &mut screen,
+        &mut caret,
+        &mut comma_in_plan,
+        |s, c| {
+            if *c > 0 {
+                *c -= 1;
+                s.remove(*c);
+            }
+        },
+    );
+    // Right back to the field end, then the next word.
+    drive_with_native(
+        &mut d,
+        KeyEvent::right(),
+        &mut screen,
+        &mut caret,
+        &mut comma_in_plan,
+        |s, c| {
+            if *c < s.len() {
+                *c += 1;
+            }
+        },
+    );
+    for ch in "is a test ".chars() {
+        drive_with_native(
+            &mut d,
+            KeyEvent::char(ch),
+            &mut screen,
+            &mut caret,
+            &mut comma_in_plan,
+            |s, c| {
+                s.insert(*c, ch);
+                *c += 1;
+            },
+        );
+    }
+
+    let text: String = screen.iter().collect();
+    // The comma stays deleted and the space survives; the rewritten tail is
+    // the english restore of the freshly typed words only - no rewrite may
+    // reach back across "thí" or re-inject the comma.
+    assert_eq!(text, "thí íis a test");
+    assert!(!text.contains(','));
+    assert!(!comma_in_plan, "no plan may re-inject the deleted comma");
+}

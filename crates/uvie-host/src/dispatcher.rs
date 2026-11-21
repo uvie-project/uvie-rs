@@ -103,6 +103,13 @@ pub struct Dispatcher {
     /// right of it (normal typing position after a commit space), positive =
     /// the caret moved back into earlier text.
     caret_back: isize,
+    /// An arrow key moved the tracked caret since the newest word's gap was
+    /// committed - whether the real caret actually moved is unconfirmable
+    /// (Right at the end of the field does nothing on screen). While set,
+    /// a Backspace delete at what we believe is the end of the gap cannot
+    /// be trusted to have removed the last separator, so the exact
+    /// `remove_last_separator` undo is not used.
+    caret_drift: bool,
     /// Auto-capitalize sentence state + per-app memory.
     pub sentence: SentenceState,
     /// Upper bound on the invisible-raw-key drain in `handle_backspace`: the
@@ -121,6 +128,7 @@ impl Dispatcher {
             macro_enabled: false,
             edit_committed: true,
             caret_back: 0,
+            caret_drift: false,
             sentence: SentenceState::new(),
             max_backspace_drain: 24,
         }
@@ -148,6 +156,7 @@ impl Dispatcher {
     pub fn reset(&mut self) {
         self.session.reset();
         self.caret_back = 0;
+        self.caret_drift = false;
     }
 
     /// Focus moved to another app: drop the in-flight composition and swap
@@ -387,10 +396,12 @@ impl Dispatcher {
     fn after_word_break(&mut self, was_composing: bool, sep: char) {
         if was_composing {
             // The commit just recorded the word; the separator lands right
-            // after it.
+            // after it and the caret is known to sit at its end - the gap's
+            // tracked geometry is fresh, so any earlier arrow drift is gone.
             self.caret_back = 0;
             self.session.note_separator(sep);
             self.caret_back = -1;
+            self.caret_drift = false;
         } else if self.caret_back <= 0 && self.caret_back == -(self.session.trailing_gap() as isize)
         {
             self.session.note_separator(sep);
@@ -442,6 +453,9 @@ impl Dispatcher {
             let mut plan = Vec::new();
             push_plan(&mut plan, bs, 0, &out);
             self.caret_back = if left { 1 } else { -1 };
+            // The commit re-anchored the caret, but whether the arrow moved
+            // the real caret is unconfirmed.
+            self.caret_drift = true;
             Dispatch::Pass(plan)
         } else {
             // Left into a gap holding a control separator the app may never
@@ -453,6 +467,7 @@ impl Dispatcher {
                 self.reset();
             } else {
                 self.caret_back += if left { 1 } else { -1 };
+                self.caret_drift = true;
             }
             Dispatch::pass()
         }
@@ -543,7 +558,7 @@ impl Dispatcher {
                 // its geometry is unconfirmed, so the key goes native.
                 self.reset();
             } else {
-                if self.caret_back == -(self.session.trailing_gap() as isize) {
+                if !self.caret_drift && self.caret_back == -(self.session.trailing_gap() as isize) {
                     self.session.remove_last_separator();
                 } else {
                     self.session.remove_separator();
@@ -585,11 +600,12 @@ impl Dispatcher {
         // Backspace deletes the char left of the caret. At the end of the gap
         // that is the last separator, which the engine undoes exactly; inside
         // the gap it is one of the middle ones, so the gap goes conservative.
-        let removed = if self.caret_back == -(self.session.trailing_gap() as isize) {
-            self.session.remove_last_separator()
-        } else {
-            self.session.remove_separator()
-        };
+        let removed =
+            if !self.caret_drift && self.caret_back == -(self.session.trailing_gap() as isize) {
+                self.session.remove_last_separator()
+            } else {
+                self.session.remove_separator()
+            };
         if removed {
             self.caret_back += 1;
         } else {
