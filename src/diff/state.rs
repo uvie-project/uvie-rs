@@ -113,6 +113,10 @@ pub struct CommittedWord {
     /// `gap == 1` it is the exact character between this word and the next
     /// one, which the retroactive English fix needs to rebuild the span.
     pub sep: char,
+    /// Every separator currently in the gap is the same char, so `sep`
+    /// describes them all. Set when the gap grows 0 -> 1; once a `remove_separator`
+    /// leaves a mixed gap the char is unknowable and `sep` is reset to `'\0'`.
+    pub sep_uniform: bool,
     /// `raw` still types `rendered`. Cleared when a native Backspace left a
     /// text whose canonical keystrokes do not render back to it (English
     /// "wa": a leading `w` is the ư modifier). A non-editable entry keeps its
@@ -419,6 +423,7 @@ impl DiffState {
             rendered,
             gap: 0,
             sep: '\0',
+            sep_uniform: true,
             editable: true,
             had_cancel: false,
             ends_sentence: false,
@@ -565,6 +570,11 @@ impl DiffState {
         self.word_since_sep = false;
         self.note_token_char(ch, glued);
         if let Some(w) = self.committed_mut(0) {
+            if w.gap == 0 {
+                w.sep_uniform = true;
+            } else {
+                w.sep_uniform &= w.sep == ch;
+            }
             w.gap += 1;
             w.sep = ch;
         }
@@ -619,13 +629,26 @@ impl DiffState {
     /// Returns false when there is no separator left to account for.
     #[inline]
     pub(crate) fn remove_separator(&mut self) -> bool {
-        match self.committed_mut(0) {
+        let gap_zero = match self.committed_mut(0) {
             Some(w) if w.gap > 0 => {
                 w.gap -= 1;
-                true
+                // A mixed gap can no longer name its remaining char (" ,"
+                // losing the space leaves ","): mark the separator unknown.
+                if !w.sep_uniform {
+                    w.sep = '\0';
+                }
+                w.gap == 0
             }
-            _ => false,
+            _ => return false,
+        };
+        if gap_zero {
+            // The char before the caret is the word again: the next separator
+            // is glued to it and the tracked separator history resets.
+            self.word_since_sep = true;
+            self.last_sep = '\0';
+            self.last_sep_glued = false;
         }
+        true
     }
 
     /// Remove the committed word at `step` (0 = newest) and shift the ring so

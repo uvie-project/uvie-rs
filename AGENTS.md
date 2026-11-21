@@ -616,6 +616,27 @@ significant change on short benchmarks, -1.3% to -1.7% improvement on
 sentence benchmarks, and -6.8% to -8.1% improvement on backspace
 benchmarks (the old backspace override check is now dead code).
 
+### Accuracy Improvement (2026-11): cross-word rewrite safety
+`retro_restore_english` and `commit_contraction` erase and retype text left
+of the caret, so they only run when the ring describes that text exactly:
+
+1. **Exact-separator tracking** (`CommittedWord::sep_uniform`): true while
+   every gap char is the same; a `remove_separator` on a mixed gap sets
+   `sep = '\0'` (unknowable). When the gap empties, `word_since_sep` resets
+   and the next separator is glued to the word. A gap merge on word delete
+   is uniform only when both sides shared one char.
+2. **No rewrite across a control/unknown separator**: the retro walk breaks
+   on `sep.is_control()` - newline (chat Enter already sent the line), the
+   Break key's '\0', a mixed-gap leftover - in addition to `gap != 1`.
+3. **Incomplete raw is never rebuilt**: `is_contraction` requires
+   `prev.editable` and the retro `restorable` requires `entry.editable`,
+   so an overflowed word (raw = tail) is never reconstructed.
+4. **`cross_word_rewrite` flag** (`set_cross_word_rewrite`, default on,
+   FFI `uvie_engine_set_cross_word_rewrite`, host
+   `EngineSession::set_cross_word_rewrite` mirrored from
+   `Dispatcher::edit_committed`): gates `retro_ok` and the contraction.
+   Preedit hosts (ibus/fcitx) turn it off; single-word restores still run.
+
 ### Round 1: Eliminate heap allocations
 - `diff_into`: single-pass char counting (was double `.chars().count()`)
 - `feed_diff_core`: `mem::swap`/`mem::take` instead of `String::clone`

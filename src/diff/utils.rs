@@ -374,6 +374,7 @@ impl UltraFastViEngine {
         scratch.set_quick_telex(self.quick_telex());
         scratch.set_relaxed_coda(self.relaxed_coda());
         scratch.set_english_override(english_override);
+        scratch.set_cross_word_rewrite(self.cross_word_rewrite());
         scratch
     }
 

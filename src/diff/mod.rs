@@ -832,7 +832,7 @@ impl UltraFastViEngine {
         // An ALL-CAPS acronym or a code identifier is no proof that the
         // sentence is English, so such a word must not restore the words in
         // front of it ("car CI/CD" stays "cả CI/CD").
-        let retro_ok = gate && self.retro_allowed(boundary);
+        let retro_ok = gate && self.cross_word_rewrite && self.retro_allowed(boundary);
 
         // English dictionary override: if the full word matches a known
         // English word, replace the Vietnamese transform with the raw English
@@ -851,7 +851,7 @@ impl UltraFastViEngine {
         // apostrophe and this word is its suffix ("didn't", "it's", "we'll").
         // The word before the apostrophe is English too, so it must show its
         // literal keystrokes — the span rewrite covers both words.
-        if gate && self.is_contraction() {
+        if gate && self.cross_word_rewrite && self.is_contraction() {
             return self.commit_contraction();
         }
 
@@ -1076,6 +1076,19 @@ impl UltraFastViEngine {
                 return false;
             };
             if let Some(older) = self.diff.committed_mut(step) {
+                // The two gaps merge into one span of separators. The merged
+                // gap names an exact char only when both sides were uniform
+                // in the same char; anything else is unknown.
+                if removed.gap > 0 {
+                    if older.gap == 0 {
+                        older.sep = removed.sep;
+                        older.sep_uniform = removed.sep_uniform;
+                    } else {
+                        older.sep_uniform =
+                            older.sep_uniform && removed.sep_uniform && older.sep == removed.sep;
+                        older.sep = if older.sep_uniform { removed.sep } else { '\0' };
+                    }
+                }
                 older.gap += removed.gap;
             }
             // Erasing the newest word leaves the caret inside the merged
@@ -1613,7 +1626,7 @@ impl UltraFastViEngine {
         let Some(prev) = self.diff.committed(0) else {
             return false;
         };
-        if prev.gap != 1 || prev.sep != '\'' {
+        if prev.gap != 1 || prev.sep != '\'' || !prev.editable {
             return false;
         }
         let raw = &self.diff.word_raw;
@@ -2057,7 +2070,10 @@ impl UltraFastViEngine {
             let Some(entry) = self.diff.committed(n) else {
                 break;
             };
-            if entry.gap != 1 {
+            if entry.gap != 1 || entry.sep.is_control() {
+                // A mixed or control separator (newline, the Break key's
+                // '\0', an unknown char after a separator delete) can never
+                // be rebuilt exactly, so the rewrite must stop before it.
                 break;
             }
             // A word typed with an explicit cancel press is on screen as the
@@ -2075,7 +2091,8 @@ impl UltraFastViEngine {
                 ContextMode::Auto => crate::tables::is_top_vietnamese_syllable(&entry.rendered),
                 ContextMode::Vietnamese => Self::keeps_vietnamese_render(ctx, &entry.rendered),
             };
-            let restorable = !entry.had_cancel
+            let restorable = entry.editable
+                && !entry.had_cancel
                 && (entry.sep == '-' || !protected)
                 && (entry.rendered.chars().count() != entry.raw.len()
                     || !entry

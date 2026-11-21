@@ -70,6 +70,13 @@ impl EngineSession {
         self.engine.set_english_override(opts.english_override);
     }
 
+    /// Allow or forbid rewrites that touch already-committed text (retro
+    /// English restore, contraction spans). Hosts whose committed text is
+    /// immutable (preedit shells like ibus/fcitx) pass false.
+    pub fn set_cross_word_rewrite(&mut self, enabled: bool) {
+        self.engine.set_cross_word_rewrite(enabled);
+    }
+
     /// Feed one ASCII char. Returns `(backspaces, new_suffix)` - the host must
     /// erase `backspaces` chars then type `new_suffix`.
     pub fn feed(&mut self, ch: char) -> (usize, String) {

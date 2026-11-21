@@ -94,6 +94,9 @@ pub struct Dispatcher {
     pub macro_enabled: bool,
     /// LabanKey-style post-commit editing: arrow back onto a committed word
     /// and type a tone key to re-render it. On by default, like uvie-mac.
+    /// Off means the host cannot rewrite committed text at all (ibus/fcitx
+    /// preedit shells), so cross-word rewrites are disabled too: the
+    /// dispatcher mirrors this flag into `EngineSession::set_cross_word_rewrite`.
     pub edit_committed: bool,
     /// Caret distance (screen characters) back to the end of the newest
     /// committed word. 0 = caret at that word's end (edit-armed), negative =
@@ -175,6 +178,10 @@ impl Dispatcher {
         if key.injected {
             return Dispatch::pass();
         }
+
+        // A host that cannot rewrite committed text gets no cross-word
+        // rewrites either (retro English restore, contractions).
+        self.session.set_cross_word_rewrite(self.edit_committed);
 
         if ctx.app_excluded {
             self.reset();

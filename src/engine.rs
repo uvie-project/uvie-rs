@@ -41,6 +41,11 @@ pub struct UltraFastViEngine {
     /// Vietnamese transform. Default on; hosts can expose it as a
     /// "restore English words" user toggle.
     pub(crate) enable_english_override: bool,
+    /// Cross-word rewrites are allowed: the retroactive English restore and
+    /// the contraction fix both erase and retype text left of the current
+    /// word. A preedit-style host (ibus/fcitx) cannot rewrite committed app
+    /// text and clears this; single-word restores still apply.
+    pub(crate) cross_word_rewrite: bool,
     /// Simple Telex mode: `w` always applies horn/breve to all vowel
     /// candidates (vneHookAll), with no standalone `w→ư`, no double-w
     /// cancel, and no silent consume. Matches UniKey "Simple Telex".
@@ -77,6 +82,7 @@ impl UltraFastViEngine {
             enable_modern_orthography: false,
             enable_relaxed_coda: false,
             enable_english_override: true,
+            cross_word_rewrite: true,
             is_simple_telex: false,
             syl_structure: SylStructure::new(),
             diff: DiffState::new(),
@@ -121,6 +127,13 @@ impl UltraFastViEngine {
     }
     pub fn english_override(&self) -> bool {
         self.enable_english_override
+    }
+
+    pub fn set_cross_word_rewrite(&mut self, enabled: bool) {
+        self.cross_word_rewrite = enabled;
+    }
+    pub fn cross_word_rewrite(&self) -> bool {
+        self.cross_word_rewrite
     }
 
     pub fn set_input_method(&mut self, method: InputMethod) {

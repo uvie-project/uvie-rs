@@ -37,6 +37,8 @@ void uvie_engine_set_relaxed_coda(UvieEngine *engine, int enabled);
 
 void uvie_engine_set_english_override(UvieEngine *engine, int enabled);
 
+void uvie_engine_set_cross_word_rewrite(UvieEngine *engine, int enabled);
+
 /**
  * Feed a single ASCII character.
  * Returns the number of backspaces the caller must send,

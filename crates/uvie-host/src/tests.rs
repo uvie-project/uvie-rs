@@ -1124,3 +1124,159 @@ fn macro_lookup() {
     assert_eq!(t.entries.len(), 1);
     assert_eq!(t.lookup("hn"), None);
 }
+
+// MARK: - Cross-word rewrite safety
+
+/// Feed one key through the dispatcher, apply its plan to `screen` and push
+/// the passed-through char for Pass dispatches. Returns the plan.
+fn feed_key(
+    d: &mut Dispatcher,
+    screen: &mut String,
+    key: KeyEvent,
+    pass: Option<char>,
+) -> Vec<InputAction> {
+    match d.handle(key, &Context::default()) {
+        Dispatch::Consume(plan) => {
+            apply(screen, &plan);
+            plan
+        }
+        Dispatch::Pass(plan) => {
+            apply(screen, &plan);
+            if let Some(c) = pass {
+                screen.push(c);
+            }
+            plan
+        }
+    }
+}
+
+fn feed_str(d: &mut Dispatcher, screen: &mut String, text: &str) {
+    for ch in text.chars() {
+        feed_key(d, screen, KeyEvent::char(ch), Some(ch));
+    }
+}
+
+#[test]
+fn newline_never_rewrites_across_the_line_break() {
+    let mut d = dispatcher();
+    let mut screen = String::new();
+    feed_str(&mut d, &mut screen, "this");
+    feed_key(&mut d, &mut screen, KeyEvent::enter(), Some('\n'));
+    feed_str(&mut d, &mut screen, "test");
+    let plan = feed_key(&mut d, &mut screen, KeyEvent::char(' '), Some(' '));
+    for action in &plan {
+        match action {
+            // "test" renders at most 4 screen chars; a larger erase reaches
+            // past the newline into the previous line.
+            InputAction::Backspace(n) => assert!(*n <= 4, "plan {plan:?}"),
+            InputAction::Text(t) => assert!(!t.contains('\n'), "plan {plan:?}"),
+            _ => {}
+        }
+    }
+    assert_eq!(screen.lines().next_back().unwrap(), "test ");
+}
+
+#[test]
+fn apostrophe_deleted_before_suffix_leaves_vietnamese_alone() {
+    let mut d = dispatcher();
+    // "vieetj'" then Backspace drops the apostrophe: the gap is mixed and its
+    // remaining char is unknowable, so 's' must not read as a contraction.
+    assert_eq!(replay_script(&mut d, "vieetj '<s "), "việt s |");
+}
+
+#[test]
+fn overflowed_word_declines_contraction_restore() {
+    let mut d = dispatcher();
+    // A word longer than the 24-key raw buffer only knows its tail; the
+    // contraction rewrite must not rebuild it from an incomplete raw.
+    assert_eq!(
+        replay(&mut d, "getCurrentApplicationSettings's "),
+        "getCurrentApplicationSettings's "
+    );
+}
+
+#[test]
+fn overflowed_word_alone_stays_intact() {
+    let mut d = dispatcher();
+    assert_eq!(
+        replay(&mut d, "getCurrentApplicationSettings "),
+        "getCurrentApplicationSettings "
+    );
+}
+
+#[test]
+fn edit_committed_off_blocks_cross_word_rewrites() {
+    let mut d = dispatcher();
+    d.edit_committed = false;
+    let mut screen = String::new();
+    feed_str(&mut d, &mut screen, "this is a test");
+    // The final Space must not erase past the current word ("test" renders
+    // at most 4 chars); committed text cannot be rewritten on this host.
+    let plan = feed_key(&mut d, &mut screen, KeyEvent::char(' '), Some(' '));
+    for action in &plan {
+        if let InputAction::Backspace(n) = action {
+            assert!(*n <= 4, "plan {plan:?}");
+        }
+    }
+    // Single-word restores still work ("test"), but the ambiguous words the
+    // retro fix would have restored stay Vietnamese on a no-rewrite host.
+    assert_eq!(screen, "thí í a test ");
+}
+
+#[test]
+fn edit_committed_on_keeps_retro_restore_working() {
+    let mut d = dispatcher();
+    assert_eq!(replay(&mut d, "this is a test "), "this is a test ");
+}
+
+#[test]
+fn separator_delete_keeps_the_comma() {
+    let mut d = dispatcher();
+    // "this," + Space + Backspace leaves "this,": the surviving separator is
+    // a mixed-gap leftover, not a space, so no rewrite may replace it.
+    // The comma survives. "thí" cannot be retro-restored to "this" here:
+    // the surviving separator is unknowable, and rebuilding the word would
+    // retype it. (Typing "this,is a test " directly knows the ',' and does
+    // restore "this".)
+    assert_eq!(
+        replay_script(&mut d, "this, <is a test "),
+        "thí,is a test |"
+    );
+}
+
+#[test]
+fn double_space_backspace_keeps_exact_space_context() {
+    let mut d = dispatcher();
+    // Two identical separators survive a delete as one exact space: the
+    // English context rules still work across it.
+    assert_eq!(
+        replay_script(&mut d, "this  <is a test "),
+        "this is a test |"
+    );
+}
+
+#[test]
+fn break_key_separator_blocks_cross_word_rewrite() {
+    let mut d = dispatcher();
+    let mut screen = String::new();
+    feed_str(&mut d, &mut screen, "this");
+    feed_key(&mut d, &mut screen, KeyEvent::break_key(), None);
+    feed_str(&mut d, &mut screen, "test");
+    let plan = feed_key(&mut d, &mut screen, KeyEvent::char(' '), Some(' '));
+    for action in &plan {
+        match action {
+            InputAction::Backspace(n) => assert!(*n <= 4, "plan {plan:?}"),
+            InputAction::Text(t) => assert!(!t.contains("this"), "plan {plan:?}"),
+            _ => {}
+        }
+    }
+    assert!(screen.ends_with("test "), "{screen:?}");
+}
+
+#[test]
+fn contractions_still_restore_the_word_before_the_apostrophe() {
+    let mut d = dispatcher();
+    assert_eq!(replay(&mut d, "it's "), "it's ");
+    let mut d = dispatcher();
+    assert_eq!(replay(&mut d, "didn't "), "didn't ");
+}

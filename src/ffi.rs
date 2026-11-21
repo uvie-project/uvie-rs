@@ -183,6 +183,15 @@ pub extern "C" fn uvie_engine_set_english_override(engine: *mut UvieEngine, enab
     });
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn uvie_engine_set_cross_word_rewrite(engine: *mut UvieEngine, enabled: c_int) {
+    let _ = std::panic::catch_unwind(|| {
+        if let Some(mut e) = lock_engine(engine) {
+            e.set_cross_word_rewrite(enabled != 0);
+        }
+    });
+}
+
 // ===================================================================
 // Diff-based keystroke API
 // ===================================================================
