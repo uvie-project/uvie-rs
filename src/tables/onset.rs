@@ -10,7 +10,7 @@
 /// ```text
 /// {NGH}, {PH}, {TH}, {TR}, {GI}, {CH}, {NH}, {NG}, {KH}, {GH},
 /// {G}, {C}, {Q}, {K}, {T}, {R}, {H}, {B}, {M}, {V}, {N}, {L},
-/// {X}, {P}, {S}, {D}, (F/W/Z/J as foreign/special)
+/// {X}, {P}, {S}, {D}, (W as foreign/special; F/Z/J removed)
 /// ```
 pub(crate) static LEGAL_ONSETS: &[&[u8]] = &[
     // 3-char
@@ -21,8 +21,9 @@ pub(crate) static LEGAL_ONSETS: &[&[u8]] = &[
     // đ (base 'd', but in practice the engine stores raw 'd' for đ onset too)
     b"d",
     // Foreign/extended allowed as onset
-    // NOTE: 'f' removed to fix "fix" -> "fĩ" bug (English word interference)
-    b"w", b"z", b"j",
+    // NOTE: 'f' removed to fix "fix" -> "fĩ", 'j'/'z' removed to fix
+    // "jira" -> "jỉa" / "zoo" -> "zô" flicker (English word interference)
+    b"w",
 ];
 
 /// Onset↔nucleus compatibility.
@@ -77,14 +78,14 @@ pub fn is_legal_onset(onset: &[u8]) -> bool {
         1 => {
             let b = onset[0];
             // Any single lowercase consonant that is not a pure vowel key
-            // NOTE: 'f' excluded to fix "fix" -> "fĩ" bug (English word interference)
+            // NOTE: 'f' excluded to fix "fix" -> "fĩ", 'j'/'z' excluded to fix
+            // "jira" -> "jỉa" / "zoo" -> "zô" (English word interference)
             matches!(
                 b,
                 b'b' | b'c'
                     | b'd'
                     | b'g'
                     | b'h'
-                    | b'j'
                     | b'k'
                     | b'l'
                     | b'm'
@@ -97,7 +98,6 @@ pub fn is_legal_onset(onset: &[u8]) -> bool {
                     | b'v'
                     | b'w'
                     | b'x'
-                    | b'z'
             )
         }
         2 => {
