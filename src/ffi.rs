@@ -442,6 +442,21 @@ pub extern "C" fn uvie_engine_remove_last_separator(engine: *mut UvieEngine) -> 
     .unwrap_or(0)
 }
 
+/// Returns 1 when the newest committed word's trailing gap contains a
+/// control separator (newline, tab, the Break key's NUL): the host may
+/// never have inserted that char, so movement and deletes inside the gap
+/// must not trust its geometry.
+#[unsafe(no_mangle)]
+pub extern "C" fn uvie_engine_trailing_gap_has_control(engine: *const UvieEngine) -> c_int {
+    std::panic::catch_unwind(|| {
+        let Some(e) = lock_engine_const(engine) else {
+            return 0;
+        };
+        if e.trailing_gap_has_control() { 1 } else { 0 }
+    })
+    .unwrap_or(0)
+}
+
 /// Separator chars currently on screen right after the newest committed word
 /// (the caret offset 0 sits just left of them).
 #[unsafe(no_mangle)]

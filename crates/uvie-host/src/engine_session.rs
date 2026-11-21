@@ -151,6 +151,13 @@ impl EngineSession {
         self.engine.trailing_gap()
     }
 
+    /// The trailing gap contains a control separator (Enter, Break): the
+    /// app may never have inserted it (chat send), so the host must not
+    /// adjust the gap or caret inside it.
+    pub fn trailing_gap_has_control(&self) -> bool {
+        self.engine.trailing_gap_has_control()
+    }
+
     /// The current sentence's committed words with their separators - the
     /// text a host hands a language recognizer.
     pub fn sentence_text(&self) -> String {

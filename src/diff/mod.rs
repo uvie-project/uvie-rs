@@ -1007,6 +1007,14 @@ impl UltraFastViEngine {
         self.diff.remove_last_separator()
     }
 
+    /// The newest word's trailing gap contains a control separator
+    /// (newline, tab, the Break key's '\0'): the host may never have
+    /// inserted that char, so movement and deletes inside the gap trust
+    /// geometry the host never confirmed.
+    pub fn trailing_gap_has_control(&self) -> bool {
+        self.diff.trailing_gap_has_control()
+    }
+
     /// Separator chars currently on screen right after the newest committed
     /// word (the caret offset 0 is just left of them).
     pub fn trailing_gap(&self) -> usize {
@@ -1102,6 +1110,7 @@ impl UltraFastViEngine {
                     }
                 }
                 older.gap += removed.gap;
+                older.gap_has_control |= removed.gap_has_control;
             }
             // Erasing the newest word leaves the caret inside the merged
             // separators (right of the new newest word's end); erasing an

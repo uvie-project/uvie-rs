@@ -1242,6 +1242,85 @@ fn separator_delete_keeps_the_comma() {
     );
 }
 
+/// A passed Backspace deletes one char natively on the app side.
+fn feed_native_backspace(d: &mut Dispatcher, screen: &mut String) -> Vec<InputAction> {
+    match d.handle(KeyEvent::backspace(), &Context::default()) {
+        Dispatch::Consume(plan) => {
+            apply(screen, &plan);
+            plan
+        }
+        Dispatch::Pass(plan) => {
+            apply(screen, &plan);
+            screen.pop();
+            plan
+        }
+    }
+}
+
+#[test]
+fn control_gap_backspace_never_revives_sent_text() {
+    // "this," + Enter, then the chat app sent the line and cleared the
+    // field: the '\n' gap's geometry is unconfirmed, so the Backspace must
+    // go native - not undo the Enter and revive ',' as a known separator.
+    let mut d = dispatcher();
+    let mut screen = String::new();
+    feed_str(&mut d, &mut screen, "this,");
+    feed_key(&mut d, &mut screen, KeyEvent::enter(), Some('\n'));
+    screen.clear();
+    let plan = feed_native_backspace(&mut d, &mut screen);
+    for action in &plan {
+        if let InputAction::Backspace(n) = action {
+            assert!(*n == 0, "plan {plan:?}");
+        }
+    }
+    feed_str(&mut d, &mut screen, "is a test ");
+    // Whatever a fresh engine produces for the same draft: the sent text
+    // must play no role in it.
+    let mut fresh = dispatcher();
+    assert_eq!(screen, replay(&mut fresh, "is a test "));
+}
+
+#[test]
+fn control_gap_backspace_does_not_arm_post_commit_edit() {
+    // Same scenario, word "chao": the Backspace must not arm a post-commit
+    // edit on the sent word either.
+    let mut d = dispatcher();
+    let mut screen = String::new();
+    feed_str(&mut d, &mut screen, "chao");
+    feed_key(&mut d, &mut screen, KeyEvent::enter(), Some('\n'));
+    screen.clear();
+    feed_native_backspace(&mut d, &mut screen);
+    feed_str(&mut d, &mut screen, "sao ");
+    let mut fresh = dispatcher();
+    assert_eq!(screen, replay(&mut fresh, "sao "));
+}
+
+#[test]
+fn break_key_gap_backspace_goes_native() {
+    // The Break key reports '\0', also a control separator: same rule.
+    let mut d = dispatcher();
+    let mut screen = String::new();
+    feed_str(&mut d, &mut screen, "chao");
+    feed_key(&mut d, &mut screen, KeyEvent::break_key(), None);
+    screen.clear();
+    feed_native_backspace(&mut d, &mut screen);
+    feed_str(&mut d, &mut screen, "sao ");
+    let mut fresh = dispatcher();
+    assert_eq!(screen, replay(&mut fresh, "sao "));
+}
+
+#[test]
+fn separator_undo_survives_word_reopen() {
+    // "soong" reopens mid-word (English "soon" + 'g' re-renders "sông");
+    // the reopen path must not drop the gap's undo snapshots, so the
+    // separator delete at the end of the gap is still an exact undo.
+    let mut d = dispatcher();
+    assert_eq!(
+        replay_script(&mut d, "this, soong<<<<<<is a test "),
+        "this,is a test |"
+    );
+}
+
 #[test]
 fn separator_delete_undoes_code_token_dot() {
     // A '.' deleted at the end of the gap must also undo the code-token

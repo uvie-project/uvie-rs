@@ -323,3 +323,40 @@ fn remove_last_separator_restores_sentence_context() {
     assert!(text.contains("được"), "{text:?}");
     assert!(!text.contains("chào"), "{text:?}");
 }
+
+/// The gap's control flag tracks a control separator through its whole
+/// lifecycle: set by '\n', kept while later separators join the gap,
+/// restored by exact undo, and cleared once the gap empties.
+#[test]
+fn gap_has_control_lifecycle() {
+    let mut e = UltraFastViEngine::new();
+    let mut h = Host::new();
+    h.type_text(&mut e, "chaof");
+    h.commit(&mut e, '\n');
+    assert!(e.trailing_gap_has_control());
+    // A normal separator joins the gap but the '\n' is still in it.
+    h.commit(&mut e, ' ');
+    assert!(e.trailing_gap_has_control());
+    // Exact undo of ' ': the '\n' and its flag stay.
+    assert!(e.remove_last_separator());
+    h.screen.pop();
+    assert!(e.trailing_gap_has_control());
+    // Exact undo of '\n': the pre-'\n' state had no control separator and
+    // the gap is empty again.
+    assert!(e.remove_last_separator());
+    h.screen.pop();
+    assert!(!e.trailing_gap_has_control());
+    assert!(!e.remove_last_separator());
+
+    // A control gap never revives a sent separator: with the '\n' deleted
+    // conservatively (position unknown) the flag also clears at gap 0.
+    let mut e = UltraFastViEngine::new();
+    let mut h = Host::new();
+    h.type_text(&mut e, "chaof");
+    h.commit(&mut e, '\n');
+    h.commit(&mut e, ' ');
+    h.backspace_separator(&mut e);
+    assert!(e.trailing_gap_has_control());
+    h.backspace_separator(&mut e);
+    assert!(!e.trailing_gap_has_control());
+}

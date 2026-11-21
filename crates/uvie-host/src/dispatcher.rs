@@ -444,7 +444,16 @@ impl Dispatcher {
             self.caret_back = if left { 1 } else { -1 };
             Dispatch::Pass(plan)
         } else {
-            self.caret_back += if left { 1 } else { -1 };
+            // Left into a gap holding a control separator the app may never
+            // have inserted (a chat app's Enter sent and cleared the field):
+            // its geometry is unconfirmed, so the key goes native and the
+            // anchor drops. Right only moves within or past the tracked gap;
+            // an overshoot already resets on the next key.
+            if left && self.caret_back < 0 && self.session.trailing_gap_has_control() {
+                self.reset();
+            } else {
+                self.caret_back += if left { 1 } else { -1 };
+            }
             Dispatch::pass()
         }
     }
@@ -473,7 +482,13 @@ impl Dispatcher {
         if self.caret_back > 0 {
             self.reset();
         } else if ((-self.caret_back) as usize) < self.session.trailing_gap() {
-            self.session.remove_separator();
+            if self.session.trailing_gap_has_control() {
+                // Inside an unconfirmed gap (the app may never have inserted
+                // the control separator): drop tracking, delete natively.
+                self.reset();
+            } else {
+                self.session.remove_separator();
+            }
         }
         Dispatch::Pass(plan)
     }
@@ -522,6 +537,11 @@ impl Dispatcher {
             // the character left of the caret and the caret moves one left.
             if self.caret_back >= 0 {
                 self.reset();
+            } else if self.session.trailing_gap_has_control() {
+                // The gap holds a control separator the app may never have
+                // inserted (a chat app's Enter sent and cleared the field):
+                // its geometry is unconfirmed, so the key goes native.
+                self.reset();
             } else {
                 if self.caret_back == -(self.session.trailing_gap() as isize) {
                     self.session.remove_last_separator();
@@ -555,14 +575,22 @@ impl Dispatcher {
             self.reset();
             return Dispatch::pass();
         }
+        // A gap holding a control separator may never have been inserted
+        // (a chat app's Enter sent and cleared the field): its geometry is
+        // unconfirmed, so the key goes native and the tracking drops.
+        if self.session.trailing_gap_has_control() {
+            self.reset();
+            return Dispatch::pass();
+        }
         // Backspace deletes the char left of the caret. At the end of the gap
         // that is the last separator, which the engine undoes exactly; inside
         // the gap it is one of the middle ones, so the gap goes conservative.
-        if if self.caret_back == -(self.session.trailing_gap() as isize) {
+        let removed = if self.caret_back == -(self.session.trailing_gap() as isize) {
             self.session.remove_last_separator()
         } else {
             self.session.remove_separator()
-        } {
+        };
+        if removed {
             self.caret_back += 1;
         } else {
             self.reset();

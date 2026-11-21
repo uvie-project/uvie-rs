@@ -149,6 +149,14 @@ int uvie_engine_remove_separator(UvieEngine *engine);
 int uvie_engine_remove_last_separator(UvieEngine *engine);
 
 /**
+ * Returns 1 when the newest committed word's trailing gap contains a
+ * control separator (newline, tab, the Break key's NUL): the host may
+ * never have inserted that char, so movement and deletes inside the gap
+ * must not trust its geometry.
+ */
+int uvie_engine_trailing_gap_has_control(const UvieEngine *engine);
+
+/**
  * Separator chars currently on screen right after the newest committed word
  * (the caret offset 0 sits just left of them).
  */

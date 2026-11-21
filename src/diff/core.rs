@@ -347,6 +347,9 @@ impl UltraFastViEngine {
         let sentence_vi = self.diff.sentence_vi;
         let context_hint = self.diff.context_hint;
         let sentence_break_pending = self.diff.sentence_break_pending;
+        // The undo snapshots belong to the ring's trailing gap, which
+        // survives untouched: preserve them like the ring.
+        let sep_undo = self.diff.take_sep_undo();
         self.reset_diff();
         self.diff.edit_history = ring;
         self.diff.edit_history_start = ring_start;
@@ -354,6 +357,7 @@ impl UltraFastViEngine {
         self.diff.sentence_vi = sentence_vi;
         self.diff.context_hint = context_hint;
         self.diff.sentence_break_pending = sentence_break_pending;
+        self.diff.restore_sep_undo(sep_undo);
 
         // Replay the whole word with the override off: the dictionary prefix
         // would otherwise fire again and re-pin the word to raw.

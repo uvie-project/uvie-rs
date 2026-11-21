@@ -130,6 +130,11 @@ pub struct CommittedWord {
     /// A sentence-ending separator (`.`, `!`, `?`, newline) was typed right
     /// after this word: the next word starts a new sentence.
     pub ends_sentence: bool,
+    /// The gap contains a control separator (`'\n'`, `'\r'`, `'\t'`, the
+    /// Break key's `'\0'`): the host may never have inserted that char (a
+    /// chat app's Enter sends and clears), so geometry inside such a gap is
+    /// unconfirmed. Cleared when the gap empties.
+    pub gap_has_control: bool,
 }
 
 /// Everything `note_separator` mutates, snapshotted just before the char was
@@ -157,6 +162,8 @@ pub(crate) struct SepUndo {
     pub sep_uniform: bool,
     /// Its `ends_sentence` before this separator.
     pub ends_sentence: bool,
+    /// Its `gap_has_control` before this separator.
+    pub gap_has_control: bool,
 }
 
 /// Pre-override Vietnamese pipeline state, saved when the English
@@ -466,6 +473,7 @@ impl DiffState {
             editable: true,
             had_cancel: false,
             ends_sentence: false,
+            gap_has_control: false,
         });
         self.edit_history_len += 1;
         self.word_since_sep = true;
@@ -604,6 +612,7 @@ impl DiffState {
                 sep: w.sep,
                 sep_uniform: w.sep_uniform,
                 ends_sentence: w.ends_sentence,
+                gap_has_control: w.gap_has_control,
             });
         }
         // A separator right after a committed word is glued to it (`_` in
@@ -644,6 +653,7 @@ impl DiffState {
             }
             w.gap += 1;
             w.sep = ch;
+            w.gap_has_control |= ch.is_control();
         }
     }
 
@@ -714,6 +724,29 @@ impl DiffState {
         self.sep_undo_len = 0;
     }
 
+    /// Take the undo stack out for a `clear()` that preserves the ring
+    /// (`reopen_as_vietnamese`): the snapshots belong to the ring's trailing
+    /// gap, so they must be put back with it.
+    pub(crate) fn take_sep_undo(&mut self) -> ([Option<SepUndo>; 4], u8) {
+        let undo = (self.sep_undo, self.sep_undo_len);
+        self.clear_sep_undo();
+        undo
+    }
+
+    /// Put back a stack saved by `take_sep_undo`.
+    pub(crate) fn restore_sep_undo(&mut self, undo: ([Option<SepUndo>; 4], u8)) {
+        self.sep_undo = undo.0;
+        self.sep_undo_len = undo.1;
+    }
+
+    /// The newest word's trailing gap contains a control separator: the host
+    /// may never have inserted that char, so geometry inside the gap is
+    /// unconfirmed.
+    #[inline]
+    pub(crate) fn trailing_gap_has_control(&self) -> bool {
+        self.committed(0).is_some_and(|w| w.gap_has_control)
+    }
+
     /// A separator char right after the newest committed word was deleted.
     /// Returns false when there is no separator left to account for.
     #[inline]
@@ -726,6 +759,9 @@ impl DiffState {
                 // losing the space leaves ","): mark the separator unknown.
                 if !w.sep_uniform {
                     w.sep = '\0';
+                }
+                if w.gap == 0 {
+                    w.gap_has_control = false;
                 }
                 w.gap == 0
             }
@@ -777,6 +813,7 @@ impl DiffState {
             w.sep = undo.sep;
             w.sep_uniform = undo.sep_uniform;
             w.ends_sentence = undo.ends_sentence;
+            w.gap_has_control = undo.gap_has_control && w.gap > 0;
             ended
         };
         self.last_sep = undo.last_sep;
