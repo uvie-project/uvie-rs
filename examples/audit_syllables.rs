@@ -54,7 +54,11 @@ fn decompose(syl: &str) -> Option<Vec<Ch>> {
             if !(c.is_ascii_lowercase() || c == 'đ') {
                 return None;
             }
-            out.push(Ch { v: usize::MAX, c, tone: 0 });
+            out.push(Ch {
+                v: usize::MAX,
+                c,
+                tone: 0,
+            });
         }
     }
     Some(out)
@@ -126,7 +130,10 @@ const ALL_STYLES: [Style; 11] = [
 ];
 
 fn is_vni(s: Style) -> bool {
-    matches!(s, Style::VniToneEnd | Style::VniAllEnd | Style::VniToneAfterNucleus)
+    matches!(
+        s,
+        Style::VniToneEnd | Style::VniAllEnd | Style::VniToneAfterNucleus
+    )
 }
 
 fn telex_mod(v: usize) -> Option<char> {
@@ -154,7 +161,11 @@ fn keys(chs: &[Ch], style: Style) -> Option<String> {
     let has_mod = chs.iter().any(|c| c.v != usize::MAX && MODK[c.v] != 0);
     let has_dd = chs.iter().any(|c| c.c == 'đ');
     let vni = is_vni(style);
-    let tk = if vni { VNI_TONE[tone] } else { TELEX_TONE[tone] };
+    let tk = if vni {
+        VNI_TONE[tone]
+    } else {
+        TELEX_TONE[tone]
+    };
     let mut out = String::new();
     let mut end = String::new();
     match style {
@@ -164,10 +175,21 @@ fn keys(chs: &[Ch], style: Style) -> Option<String> {
         | Style::TelexToneBeforeMod
         | Style::VniToneEnd
         | Style::VniToneAfterNucleus => {
-            if matches!(style, Style::TelexToneAfterNucleus | Style::TelexToneInline | Style::TelexToneBeforeMod | Style::VniToneAfterNucleus) && tone == 0 {
+            if matches!(
+                style,
+                Style::TelexToneAfterNucleus
+                    | Style::TelexToneInline
+                    | Style::TelexToneBeforeMod
+                    | Style::VniToneAfterNucleus
+            ) && tone == 0
+            {
                 return None;
             }
-            if style == Style::TelexToneBeforeMod && !chs.iter().any(|c| c.tone > 0 && c.v != usize::MAX && MODK[c.v] != 0) {
+            if style == Style::TelexToneBeforeMod
+                && !chs
+                    .iter()
+                    .any(|c| c.tone > 0 && c.v != usize::MAX && MODK[c.v] != 0)
+            {
                 return None;
             }
             for (i, c) in chs.iter().enumerate() {
@@ -332,7 +354,10 @@ fn case_word(w: &str, mode: u8) -> String {
     match mode {
         1 => {
             let mut it = w.chars();
-            let f: String = it.next().map(|c| c.to_uppercase().collect()).unwrap_or_default();
+            let f: String = it
+                .next()
+                .map(|c| c.to_uppercase().collect())
+                .unwrap_or_default();
             f + it.as_str()
         }
         2 => w.to_uppercase(),
@@ -341,7 +366,9 @@ fn case_word(w: &str, mode: u8) -> String {
 }
 
 fn main() {
-    let out_dir = std::env::args().nth(1).unwrap_or_else(|| "/tmp/uvie_audit".into());
+    let out_dir = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "/tmp/uvie_audit".into());
     std::fs::create_dir_all(&out_dir).unwrap();
     let words = std::fs::read_to_string("tests/data/vietnamese_22k.txt").unwrap();
     let mut syls: BTreeSet<String> = BTreeSet::new();
@@ -362,10 +389,19 @@ fn main() {
         let chs = decompose(syl).unwrap();
         for style in ALL_STYLES {
             let Some(k) = keys(&chs, style) else { continue };
-            let method = if is_vni(style) { InputMethod::Vni } else { InputMethod::Telex };
+            let method = if is_vni(style) {
+                InputMethod::Vni
+            } else {
+                InputMethod::Telex
+            };
             for case in 0u8..3 {
                 // Title/UPPER only on the two canonical styles to keep it readable
-                if case > 0 && !matches!(style, Style::TelexToneEnd | Style::VniToneEnd | Style::TelexToneAfterNucleus) {
+                if case > 0
+                    && !matches!(
+                        style,
+                        Style::TelexToneEnd | Style::VniToneEnd | Style::TelexToneAfterNucleus
+                    )
+                {
                     continue;
                 }
                 let kk = case_keys(&k, case);
@@ -375,7 +411,10 @@ fn main() {
                         continue;
                     }
                     let (typed, expect) = if ctx == "caps_run" {
-                        (format!("TIEENGS VIEEJT {kk} "), format!("TIẾNG VIỆT {want} "))
+                        (
+                            format!("TIEENGS VIEEJT {kk} "),
+                            format!("TIẾNG VIỆT {want} "),
+                        )
                     } else if ctx == "alone" {
                         (format!("{kk} "), format!("{want} "))
                     } else if is_vni(style) {
@@ -417,7 +456,11 @@ fn main() {
         let chs = decompose(syl).unwrap();
         for style in ALL_STYLES {
             let Some(k) = keys(&chs, style) else { continue };
-            let method = if is_vni(style) { InputMethod::Vni } else { InputMethod::Telex };
+            let method = if is_vni(style) {
+                InputMethod::Vni
+            } else {
+                InputMethod::Telex
+            };
             let direct = type_keys(method, &k);
             let kc: Vec<char> = k.chars().collect();
             for back in 1..=kc.len() {
@@ -449,7 +492,10 @@ fn main() {
                 let got: String = screen.iter().collect();
                 if !ok || got != direct || mid != want_mid {
                     bs_fail += 1;
-                    let _ = writeln!(bs_log, "{style:?}\t{k}\tback={back}\tmid={mid} (want {want_mid})\tgot={got} (want {direct})\tinvariant={ok}");
+                    let _ = writeln!(
+                        bs_log,
+                        "{style:?}\t{k}\tback={back}\tmid={mid} (want {want_mid})\tgot={got} (want {direct})\tinvariant={ok}"
+                    );
                 }
             }
         }
@@ -457,9 +503,20 @@ fn main() {
     println!("backspace round trip: total {bs_total} fail {bs_fail}");
     std::fs::write(format!("{out_dir}/backspace.tsv"), bs_log).unwrap();
 
-    println!("{:<24} {:<12} {:>4} {:>7} {:>6} {:>6}", "style", "ctx", "case", "total", "fail", "place");
+    println!(
+        "{:<24} {:<12} {:>4} {:>7} {:>6} {:>6}",
+        "style", "ctx", "case", "total", "fail", "place"
+    );
     for ((style, ctx, case), (t, f, p)) in &stats {
-        println!("{:<24} {:<12} {:>4} {:>7} {:>6} {:>6}", format!("{style:?}"), ctx, case, t, f, p);
+        println!(
+            "{:<24} {:<12} {:>4} {:>7} {:>6} {:>6}",
+            format!("{style:?}"),
+            ctx,
+            case,
+            t,
+            f,
+            p
+        );
     }
     for ((style, ctx, case), log) in &logs {
         let path = format!("{out_dir}/{style:?}_{ctx}_{case}.tsv");
