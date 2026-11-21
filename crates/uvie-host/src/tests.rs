@@ -1232,18 +1232,73 @@ fn edit_committed_on_keeps_retro_restore_working() {
 #[test]
 fn separator_delete_keeps_the_comma() {
     let mut d = dispatcher();
-    // "this," + Space + Backspace leaves "this,": the surviving separator is
-    // a mixed-gap leftover, not a space, so no rewrite may replace it.
-    // The comma survives. "thí" cannot be retro-restored to "this" here:
-    // the surviving separator is unknowable, and rebuilding the word would
-    // retype it. (Typing "this,is a test " directly knows the ',' and does
-    // restore "this".)
+    // "this," + Space + Backspace leaves "this,": deleting the space at the
+    // end of the gap is an exact undo, so the ',' separator is still known
+    // exactly and the retro fix restores "this" across it - the same text
+    // typing "this,is a test " directly produces.
     assert_eq!(
         replay_script(&mut d, "this, <is a test "),
-        "thí,is a test |"
+        "this,is a test |"
     );
 }
 
+#[test]
+fn separator_delete_undoes_code_token_dot() {
+    // A '.' deleted at the end of the gap must also undo the code-token
+    // state it created; on a no-rewrite host the next word renders again.
+    for script in ["chaof.<dduwowcj ", "chaof. <<dduwowcj "] {
+        let mut d = dispatcher();
+        d.edit_committed = false;
+        assert_eq!(replay_script(&mut d, script), "chàođược |", "{script:?}");
+    }
+    // With editing of committed text on, typing right after the deleted
+    // dot re-enters "chào" and extends the token instead (LabanKey edit).
+}
+
+#[test]
+fn separator_delete_inside_gap_stays_conservative() {
+    // "this, " with the caret moved inside the gap: Backspace deletes the
+    // comma (not the last separator), so the conservative path runs and the
+    // surviving separator is unknown - the space stays, no retro restore.
+    let mut d = dispatcher();
+    assert_eq!(
+        replay_script(&mut d, "this, {<}is a test "),
+        "thí is a test |"
+    );
+}
+
+#[test]
+fn sentence_end_separator_delete_restores_context() {
+    // Deleting the '!' at the end of the gap undoes the sentence end it
+    // recorded: "chào" is still part of the current sentence's text.
+    let mut d = dispatcher();
+    replay_script(&mut d, "chaof!< dduwowcj ");
+    let text = d.session.sentence_text();
+    assert!(text.contains("chào"), "{text:?}");
+    assert!(text.contains("được"), "{text:?}");
+
+    // Control: with the '!' kept, the sentence ended at "chào".
+    let mut d = dispatcher();
+    replay_script(&mut d, "chaof! dduwowcj ");
+    let text = d.session.sentence_text();
+    assert!(text.contains("được"), "{text:?}");
+    assert!(!text.contains("chào"), "{text:?}");
+}
+
+#[test]
+fn long_gap_delete_past_the_undo_stack_stays_sane() {
+    // Six separators: the undo stack holds four and the rest falls back to
+    // the conservative removal - no panic, the word still renders. (On a
+    // host that edits committed text the typed letters would instead
+    // re-enter "chào" as one token; the fresh-word render is the
+    // edit_committed=false contract.)
+    let mut d = dispatcher();
+    d.edit_committed = false;
+    assert_eq!(
+        replay_script(&mut d, "chaof      <<<<<<dduwowcj "),
+        "chàođược |"
+    );
+}
 #[test]
 fn double_space_backspace_keeps_exact_space_context() {
     let mut d = dispatcher();

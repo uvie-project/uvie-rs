@@ -139,9 +139,22 @@ impl EngineSession {
         self.engine.remove_separator()
     }
 
+    /// The separator at the END of the newest word's trailing gap was deleted
+    /// (Backspace with the caret at the end of the gap): exactly undo what its
+    /// `note_separator` did instead of degrading the gap to "unknown".
+    pub fn remove_last_separator(&mut self) -> bool {
+        self.engine.remove_last_separator()
+    }
+
     /// Separator chars currently on screen right after the newest word.
     pub fn trailing_gap(&self) -> usize {
         self.engine.trailing_gap()
+    }
+
+    /// The current sentence's committed words with their separators - the
+    /// text a host hands a language recognizer.
+    pub fn sentence_text(&self) -> String {
+        self.engine.sentence_text().to_string()
     }
 
     /// A committed word is on record: the caret offsets are measured against

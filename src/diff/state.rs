@@ -132,6 +132,33 @@ pub struct CommittedWord {
     pub ends_sentence: bool,
 }
 
+/// Everything `note_separator` mutates, snapshotted just before the char was
+/// reported so a Backspace at the end of the gap can undo it exactly instead
+/// of degrading the separator history to "unknown". One entry per separator
+/// char in the newest word's trailing gap, kept in push order.
+#[derive(Clone, Copy)]
+pub(crate) struct SepUndo {
+    pub last_sep: char,
+    pub last_sep_glued: bool,
+    pub word_since_sep: bool,
+    pub token_url: bool,
+    pub token_len: u8,
+    pub token_has_word: bool,
+    pub token_first: char,
+    pub token_prev: char,
+    pub token_prev2: char,
+    pub token_dot: bool,
+    pub sentence_vi: bool,
+    pub context_hint: ContextHint,
+    pub sentence_break_pending: bool,
+    /// The newest committed word's `sep` before this separator.
+    pub sep: char,
+    /// Its `sep_uniform` before this separator.
+    pub sep_uniform: bool,
+    /// Its `ends_sentence` before this separator.
+    pub ends_sentence: bool,
+}
+
 /// Pre-override Vietnamese pipeline state, saved when the English
 /// dictionary override commits a word whose keystrokes the pipeline
 /// collapsed. A doubled Telex key is the common case: "mass" commits the
@@ -284,6 +311,14 @@ pub struct DiffState {
     /// The composing word started inside a URL / path token: it is an
     /// identifier, not Vietnamese.
     pub word_in_url: bool,
+    /// Undo snapshots for the separators of the newest word's trailing gap,
+    /// in the order `note_separator` pushed them (one per gap char). A
+    /// Backspace at the end of the gap pops the newest one and restores the
+    /// exact pre-separator state; when the gap outgrows the stack the oldest
+    /// snapshots are dropped and `remove_last_separator` falls back to the
+    /// conservative `remove_separator`.
+    sep_undo: [Option<SepUndo>; 4],
+    sep_undo_len: u8,
 }
 
 impl Default for DiffState {
@@ -333,6 +368,8 @@ impl DiffState {
             token_prev2: '\0',
             token_dot: false,
             word_in_url: false,
+            sep_undo: [const { None }; 4],
+            sep_undo_len: 0,
         }
     }
 
@@ -366,6 +403,7 @@ impl DiffState {
         self.last_edit_caret_back = 0;
         // The separator history outlives a commit (the next separator is
         // judged against the char before it), so only a full reset drops it.
+        self.clear_sep_undo();
         self.word_since_sep = false;
         self.word_after_code = false;
         self.word_had_cancel = false;
@@ -401,6 +439,7 @@ impl DiffState {
         self.token_prev = '\0';
         self.token_prev2 = '\0';
         self.token_dot = false;
+        self.clear_sep_undo();
     }
 
     /// Push a committed word onto the ring (oldest evicted when full).
@@ -433,6 +472,9 @@ impl DiffState {
         // The token holds a word now, so its next separator char is not the
         // token's first character.
         self.token_has_word = true;
+        // The trailing gap changed owner: the recorded undo states describe
+        // the separators after the previous word, not this new one's.
+        self.clear_sep_undo();
     }
 
     /// Resolve a pending `.` sentence boundary: the dot ends the sentence
@@ -542,6 +584,28 @@ impl DiffState {
     /// retroactive English fix needs the exact separator between two words.
     #[inline]
     pub(crate) fn note_separator(&mut self, ch: char) {
+        // Snapshot everything this call mutates so a Backspace at the end of
+        // the gap can undo it exactly (remove_last_separator).
+        if let Some(w) = self.committed(0) {
+            self.push_sep_undo(SepUndo {
+                last_sep: self.last_sep,
+                last_sep_glued: self.last_sep_glued,
+                word_since_sep: self.word_since_sep,
+                token_url: self.token_url,
+                token_len: self.token_len,
+                token_has_word: self.token_has_word,
+                token_first: self.token_first,
+                token_prev: self.token_prev,
+                token_prev2: self.token_prev2,
+                token_dot: self.token_dot,
+                sentence_vi: self.sentence_vi,
+                context_hint: self.context_hint,
+                sentence_break_pending: self.sentence_break_pending,
+                sep: w.sep,
+                sep_uniform: w.sep_uniform,
+                ends_sentence: w.ends_sentence,
+            });
+        }
         // A separator right after a committed word is glued to it (`_` in
         // `foo_bar`); one that follows another separator is glued only when
         // that separator was not a space (`,` `.` in "a,."). A separator
@@ -628,10 +692,33 @@ impl DiffState {
         self.token_len = self.token_len.saturating_add(1);
     }
 
+    /// Record the undo state a `note_separator` is about to overwrite. The
+    /// stack is bounded: past 4 separators the oldest snapshots are dropped,
+    /// and `remove_last_separator` covers the missing ones conservatively.
+    #[inline]
+    fn push_sep_undo(&mut self, undo: SepUndo) {
+        if self.sep_undo_len as usize == self.sep_undo.len() {
+            self.sep_undo.rotate_left(1);
+            self.sep_undo[self.sep_undo.len() - 1] = Some(undo);
+        } else {
+            self.sep_undo[self.sep_undo_len as usize] = Some(undo);
+            self.sep_undo_len += 1;
+        }
+    }
+
+    /// Drop the undo snapshots: a gap mutation whose position is not the end
+    /// (or a reset) leaves them describing a gap that no longer exists.
+    #[inline]
+    pub(crate) fn clear_sep_undo(&mut self) {
+        self.sep_undo.fill(None);
+        self.sep_undo_len = 0;
+    }
+
     /// A separator char right after the newest committed word was deleted.
     /// Returns false when there is no separator left to account for.
     #[inline]
     pub(crate) fn remove_separator(&mut self) -> bool {
+        self.clear_sep_undo();
         let gap_zero = match self.committed_mut(0) {
             Some(w) if w.gap > 0 => {
                 w.gap -= 1;
@@ -654,6 +741,58 @@ impl DiffState {
             // the separator history cleared the pending break would wrongly
             // end the sentence at the next word.
             self.sentence_break_pending = false;
+        }
+        true
+    }
+
+    /// The separator at the END of the newest word's trailing gap was deleted
+    /// (Backspace with the caret at the end of the gap): undo exactly what its
+    /// `note_separator` did, so the remaining separators are still known
+    /// exactly. Falls back to the conservative `remove_separator` when the
+    /// snapshot for this separator is gone (a gap longer than the stack).
+    /// Returns false when there is no separator left to account for.
+    #[inline]
+    pub(crate) fn remove_last_separator(&mut self) -> bool {
+        if self.committed(0).is_none_or(|w| w.gap == 0) {
+            return false;
+        }
+        let undo = if self.sep_undo_len > 0 {
+            self.sep_undo_len -= 1;
+            self.sep_undo[self.sep_undo_len as usize].take()
+        } else {
+            None
+        };
+        let Some(undo) = undo else {
+            return self.remove_separator();
+        };
+        let ended_sentence = {
+            let Some(w) = self.committed_mut(0) else {
+                return false;
+            };
+            w.gap -= 1;
+            // The deleted separator ended the sentence only when it set
+            // `ends_sentence` itself: restore the sentence context it reset,
+            // but never clobber a hint the host supplied meanwhile.
+            let ended = !undo.ends_sentence && w.ends_sentence;
+            w.sep = undo.sep;
+            w.sep_uniform = undo.sep_uniform;
+            w.ends_sentence = undo.ends_sentence;
+            ended
+        };
+        self.last_sep = undo.last_sep;
+        self.last_sep_glued = undo.last_sep_glued;
+        self.word_since_sep = undo.word_since_sep;
+        self.token_url = undo.token_url;
+        self.token_len = undo.token_len;
+        self.token_has_word = undo.token_has_word;
+        self.token_first = undo.token_first;
+        self.token_prev = undo.token_prev;
+        self.token_prev2 = undo.token_prev2;
+        self.token_dot = undo.token_dot;
+        self.sentence_break_pending = undo.sentence_break_pending;
+        if ended_sentence {
+            self.sentence_vi = undo.sentence_vi;
+            self.context_hint = undo.context_hint;
         }
         true
     }

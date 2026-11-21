@@ -523,7 +523,11 @@ impl Dispatcher {
             if self.caret_back >= 0 {
                 self.reset();
             } else {
-                self.session.remove_separator();
+                if self.caret_back == -(self.session.trailing_gap() as isize) {
+                    self.session.remove_last_separator();
+                } else {
+                    self.session.remove_separator();
+                }
                 self.caret_back += 1;
             }
             return Dispatch::pass();
@@ -551,7 +555,14 @@ impl Dispatcher {
             self.reset();
             return Dispatch::pass();
         }
-        if self.session.remove_separator() {
+        // Backspace deletes the char left of the caret. At the end of the gap
+        // that is the last separator, which the engine undoes exactly; inside
+        // the gap it is one of the middle ones, so the gap goes conservative.
+        if if self.caret_back == -(self.session.trailing_gap() as isize) {
+            self.session.remove_last_separator()
+        } else {
+            self.session.remove_separator()
+        } {
             self.caret_back += 1;
         } else {
             self.reset();

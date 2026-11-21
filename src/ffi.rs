@@ -426,6 +426,22 @@ pub extern "C" fn uvie_engine_remove_separator(engine: *mut UvieEngine) -> c_int
     .unwrap_or(0)
 }
 
+/// Record that the separator at the END of the newest committed word's
+/// trailing gap was deleted (Backspace with the caret at the end of the
+/// gap): exactly undo what its `uvie_engine_note_separator` did. Falls back
+/// to `uvie_engine_remove_separator` semantics when the undo stack is
+/// exhausted. Returns 1 when a separator was accounted for, 0 otherwise.
+#[unsafe(no_mangle)]
+pub extern "C" fn uvie_engine_remove_last_separator(engine: *mut UvieEngine) -> c_int {
+    std::panic::catch_unwind(|| {
+        let Some(mut e) = lock_engine(engine) else {
+            return 0;
+        };
+        if e.remove_last_separator() { 1 } else { 0 }
+    })
+    .unwrap_or(0)
+}
+
 /// Separator chars currently on screen right after the newest committed word
 /// (the caret offset 0 sits just left of them).
 #[unsafe(no_mangle)]

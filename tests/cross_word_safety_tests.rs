@@ -230,3 +230,96 @@ fn remove_separator_drops_the_pending_sentence_break() {
     assert!(text.contains("được"), "{text:?}");
     assert!(!text.contains("chào"), "{text:?}");
 }
+
+/// Exact undo: `remove_last_separator` restores the separator state the '.'
+/// created - the code-token dot is gone, so the next word renders.
+#[test]
+fn remove_last_separator_undoes_code_token_dot() {
+    // Control: a word glued after the code dot shows its raw keystrokes.
+    let mut e = UltraFastViEngine::new();
+    let mut h = Host::new();
+    h.type_text(&mut e, "chaof");
+    h.commit(&mut e, '.');
+    h.type_text(&mut e, "dduwowcj");
+    h.commit(&mut e, ' ');
+    assert_eq!(h.screen, "chào.dduwowcj ");
+
+    // Deleting the dot undoes its note_separator exactly: the next word is
+    // no longer inside a code token and renders as Vietnamese.
+    let mut e = UltraFastViEngine::new();
+    let mut h = Host::new();
+    h.type_text(&mut e, "chaof");
+    h.commit(&mut e, '.');
+    assert!(e.remove_last_separator());
+    h.screen.pop();
+    h.type_text(&mut e, "dduwowcj");
+    h.commit(&mut e, ' ');
+    assert_eq!(h.screen, "chàođược ");
+}
+
+/// Exact undo on a mixed gap keeps the surviving separator known exactly:
+/// the retro fix sees the ',' and restores the word across it.
+#[test]
+fn remove_last_separator_keeps_mixed_gap_sep_known() {
+    let mut e = UltraFastViEngine::new();
+    let mut h = Host::new();
+    h.type_text(&mut e, "this");
+    h.commit(&mut e, ',');
+    h.commit(&mut e, ' ');
+    assert!(e.remove_last_separator());
+    h.screen.pop();
+    h.type_text(&mut e, "is a test");
+    h.commit(&mut e, ' ');
+    assert_eq!(h.screen, "this,is a test ");
+}
+
+/// The undo stack holds four separators: past that the removal falls back
+/// to the conservative path - still returns true, the gap still shrinks, and
+/// the next word still renders safely.
+#[test]
+fn remove_last_separator_falls_back_past_stack_depth() {
+    let mut e = UltraFastViEngine::new();
+    let mut h = Host::new();
+    h.type_text(&mut e, "chaof");
+    for _ in 0..6 {
+        h.commit(&mut e, ' ');
+    }
+    for _ in 0..6 {
+        assert!(e.remove_last_separator());
+        h.screen.pop();
+    }
+    assert!(!e.remove_last_separator());
+    h.type_text(&mut e, "dduwowcj");
+    h.commit(&mut e, ' ');
+    assert_eq!(h.screen, "chàođược ");
+}
+
+/// A sentence-end separator undone at the end of the gap restores the
+/// sentence context it cleared.
+#[test]
+fn remove_last_separator_restores_sentence_context() {
+    let mut e = UltraFastViEngine::new();
+    let mut h = Host::new();
+    h.type_text(&mut e, "chaof");
+    h.commit(&mut e, '!');
+    assert!(e.remove_last_separator());
+    h.screen.pop();
+    h.commit(&mut e, ' ');
+    h.type_text(&mut e, "dduwowcj");
+    h.commit(&mut e, ' ');
+    let text = e.sentence_text();
+    assert!(text.contains("chào"), "{text:?}");
+
+    // Control: with the '!' kept, "chào" ended the sentence and the walk
+    // stops before it.
+    let mut e = UltraFastViEngine::new();
+    let mut h = Host::new();
+    h.type_text(&mut e, "chaof");
+    h.commit(&mut e, '!');
+    h.commit(&mut e, ' ');
+    h.type_text(&mut e, "dduwowcj");
+    h.commit(&mut e, ' ');
+    let text = e.sentence_text();
+    assert!(text.contains("được"), "{text:?}");
+    assert!(!text.contains("chào"), "{text:?}");
+}

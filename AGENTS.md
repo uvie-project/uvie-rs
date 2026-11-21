@@ -687,6 +687,15 @@ of the caret, so they only run when the ring describes that text exactly:
    `EngineSession::set_cross_word_rewrite` mirrored from
    `Dispatcher::edit_committed`): gates `retro_ok` and the contraction.
    Preedit hosts (ibus/fcitx) turn it off; single-word restores still run.
+5. **Separator undo** (`SepUndo` stack, depth 4): `note_separator` snapshots
+   every field it mutates. `remove_last_separator` (Backspace at the END of
+   the newest gap) pops and undoes exactly - `this, <` keeps the ',' known.
+   Past depth 4 it falls back to `remove_separator` (conservative, mid-gap
+   deletes, position unknown), which also clears the stack; the stack resets
+   on `push_committed`, `clear_separator`, `clear()` and the gap merge.
+   `sentence_vi`/`context_hint` restore only when the deleted separator had
+   set `ends_sentence`. FFI `uvie_engine_remove_last_separator`; the
+   dispatcher picks it when `caret_back == -trailing_gap`.
 
 ### Round 1: Eliminate heap allocations
 - `diff_into`: single-pass char counting (was double `.chars().count()`)

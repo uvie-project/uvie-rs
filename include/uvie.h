@@ -140,6 +140,15 @@ size_t uvie_engine_sentence_text(const UvieEngine *engine, char *out_buf, size_t
 int uvie_engine_remove_separator(UvieEngine *engine);
 
 /**
+ * Record that the separator at the END of the newest committed word's
+ * trailing gap was deleted (Backspace with the caret at the end of the
+ * gap): exactly undo what its `uvie_engine_note_separator` did. Falls back
+ * to `uvie_engine_remove_separator` semantics when the undo stack is
+ * exhausted. Returns 1 when a separator was accounted for, 0 otherwise.
+ */
+int uvie_engine_remove_last_separator(UvieEngine *engine);
+
+/**
  * Separator chars currently on screen right after the newest committed word
  * (the caret offset 0 sits just left of them).
  */

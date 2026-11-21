@@ -998,6 +998,15 @@ impl UltraFastViEngine {
         self.diff.remove_separator()
     }
 
+    /// The separator at the END of the newest word's trailing gap was deleted
+    /// (Backspace with the caret at the end of the gap): undo exactly what its
+    /// `note_separator` did, keeping the remaining separators known exactly.
+    /// Falls back to the conservative `remove_separator` when the undo stack
+    /// is exhausted (a gap longer than 4 separators).
+    pub fn remove_last_separator(&mut self) -> bool {
+        self.diff.remove_last_separator()
+    }
+
     /// Separator chars currently on screen right after the newest committed
     /// word (the caret offset 0 is just left of them).
     pub fn trailing_gap(&self) -> usize {
@@ -1075,6 +1084,9 @@ impl UltraFastViEngine {
             let Some(removed) = self.diff.remove_committed(step) else {
                 return false;
             };
+            // The two gaps merge into one span of separators: the recorded
+            // undo states describe the pre-merge gaps.
+            self.diff.clear_sep_undo();
             if let Some(older) = self.diff.committed_mut(step) {
                 // The two gaps merge into one span of separators. The merged
                 // gap names an exact char only when both sides were uniform
