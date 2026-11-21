@@ -184,3 +184,49 @@ fn cross_word_rewrite_off_blocks_contraction() {
     assert!(bs <= 1, "bs={bs} would rewrite the previous word");
     assert!(!suffix.contains("vieetj"));
 }
+
+/// A. `sentence_text` never embeds a NUL: the unknown separator left by a
+/// mixed-gap delete stands in as a space, like the unrecorded ones.
+#[test]
+fn sentence_text_stands_in_space_for_unknown_separator() {
+    let mut e = UltraFastViEngine::new();
+    let mut h = Host::new();
+    h.type_text(&mut e, "xin");
+    h.commit(&mut e, ',');
+    h.commit(&mut e, ' ');
+    h.backspace_separator(&mut e);
+    h.type_text(&mut e, "chaof");
+    h.commit(&mut e, ' ');
+    let text = e.sentence_text();
+    assert!(!text.contains('\0'), "{text:?}");
+    assert!(text.contains("xin"), "{text:?}");
+    assert!(text.contains("chào"), "{text:?}");
+}
+
+/// A. A deleted '.' never confirmed a sentence boundary: once the separator
+/// is gone the next word must not find the sentence ended.
+#[test]
+fn remove_separator_drops_the_pending_sentence_break() {
+    let mut e = UltraFastViEngine::new();
+    let mut h = Host::new();
+    h.type_text(&mut e, "chaof");
+    h.commit(&mut e, '.');
+    h.backspace_separator(&mut e);
+    h.type_text(&mut e, "dduwowcj");
+    h.commit(&mut e, ' ');
+    let text = e.sentence_text();
+    assert!(text.contains("chào"), "{text:?}");
+
+    // Control: without the delete the '.' + ' ' ends the sentence at
+    // "chào", and the walk stops before it.
+    let mut e = UltraFastViEngine::new();
+    let mut h = Host::new();
+    h.type_text(&mut e, "chaof");
+    h.commit(&mut e, '.');
+    h.commit(&mut e, ' ');
+    h.type_text(&mut e, "dduwowcj");
+    h.commit(&mut e, ' ');
+    let text = e.sentence_text();
+    assert!(text.contains("được"), "{text:?}");
+    assert!(!text.contains("chào"), "{text:?}");
+}

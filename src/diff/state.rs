@@ -463,8 +463,9 @@ impl DiffState {
     /// Rebuilt from the committed-word ring, so a sentence longer than the
     /// ring keeps only its newest words. A sentence-end separator ends the
     /// walk; each word contributes the separators typed after it (`gap` of
-    /// them — the last one exact, the earlier ones remembered only as a
-    /// count, so spaces stand in).
+    /// them — the last one exact when it is known (an unknown '\0' also
+    /// stands in as a space), the earlier ones remembered only as a count,
+    /// so spaces stand in).
     pub fn sentence_text(&self) -> StackStr<512> {
         let mut out = StackStr::<512>::new();
         // Steps count back from the newest word, so the first sentence end
@@ -493,7 +494,9 @@ impl DiffState {
                 ok &= out.push(' ');
             }
             if word.gap > 0 {
-                ok &= out.push(word.sep);
+                // An unknown separator ('\0' after a mixed-gap delete or the
+                // Break key) stands in as a space like the unrecorded ones.
+                ok &= out.push(if word.sep == '\0' { ' ' } else { word.sep });
             }
             if !ok {
                 break;
@@ -647,6 +650,10 @@ impl DiffState {
             self.word_since_sep = true;
             self.last_sep = '\0';
             self.last_sep_glued = false;
+            // A deleted '.' never became a confirmed sentence boundary: with
+            // the separator history cleared the pending break would wrongly
+            // end the sentence at the next word.
+            self.sentence_break_pending = false;
         }
         true
     }
