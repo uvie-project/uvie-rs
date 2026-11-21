@@ -118,6 +118,38 @@ fn vni_double_digit_cancel_keeps_literal() {
 }
 
 #[test]
+fn foreign_j_z_onsets_never_take_marks() {
+    let t = InputMethod::Telex;
+    // The screen must equal the keys typed so far after EVERY keystroke:
+    // j/z words render as literal passthrough, never as a marked syllable.
+    for keys in [
+        "jira", "jas", "jar", "jis", "zas", "zoo", "json", "java", "jun", "JIRA", "Jira",
+    ] {
+        let mut e = UltraFastViEngine::new();
+        e.set_input_method(t);
+        let mut screen = String::new();
+        for (i, ch) in keys.char_indices() {
+            let (bs, suffix) = e.feed_diff(ch);
+            apply(&mut screen, bs, suffix);
+            assert_eq!(screen, keys[..=i], "keys: {keys:?} step {i}");
+        }
+    }
+    // Same words keep their literal render across a word boundary.
+    check(t, "jira ", "jira ");
+    check(t, "JIRA ", "JIRA ");
+    check(t, "tooi dufng jira ", "tôi dùng jira ");
+    check(t, "zoo ", "zoo ");
+    // Unchanged Vietnamese: j/z stay tone keys, gi is still an onset,
+    // z after a consonant stays literal.
+    check(t, "aj", "ạ");
+    check(t, "vieetj", "việt");
+    check(t, "asz", "a");
+    check(t, "gif ", "gì ");
+    check(t, "giaf ", "già ");
+    check(t, "dz ", "dz ");
+}
+
+#[test]
 fn vni_backspace_sanity() {
     let mut e = UltraFastViEngine::new();
     e.set_input_method(InputMethod::Vni);

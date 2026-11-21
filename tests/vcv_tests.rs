@@ -1204,8 +1204,8 @@ fn z_as_consonant_when_no_tone() {
         ("azo", "azo"),
         ("ezi", "ezi"),
         ("ozu", "ozu"),
-        // z + double vowel (z is consonant, oo→ô still works)
-        ("zoo", "zô"),
+        // z + double vowel (z is not a legal onset: literal passthrough)
+        ("zoo", "zoo"),
         // English words with z
         ("azure", "azure"),
         ("jazz", "jazz"),
