@@ -360,3 +360,27 @@ fn gap_has_control_lifecycle() {
     h.backspace_separator(&mut e);
     assert!(!e.trailing_gap_has_control());
 }
+
+/// `sep_base` anchors the exact post-word state: a gap deeper than the
+/// 4-entry undo stack (a '.' + five spaces) still returns to it once the
+/// gap is empty, so the deleted dot's code-token state cannot survive.
+#[test]
+fn sep_base_restores_post_word_state_past_stack_depth() {
+    let mut e = UltraFastViEngine::new();
+    let mut h = Host::new();
+    h.type_text(&mut e, "chaof");
+    h.commit(&mut e, '.');
+    for _ in 0..5 {
+        h.commit(&mut e, ' ');
+    }
+    for _ in 0..6 {
+        assert!(e.remove_last_separator());
+        h.screen.pop();
+    }
+    assert!(!e.remove_last_separator());
+    h.commit(&mut e, ',');
+    h.commit(&mut e, ' ');
+    h.type_text(&mut e, "dduwowcj");
+    h.commit(&mut e, ' ');
+    assert_eq!(h.screen, "chào, được ");
+}

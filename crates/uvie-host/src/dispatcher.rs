@@ -497,13 +497,10 @@ impl Dispatcher {
         if self.caret_back > 0 {
             self.reset();
         } else if ((-self.caret_back) as usize) < self.session.trailing_gap() {
-            if self.session.trailing_gap_has_control() {
-                // Inside an unconfirmed gap (the app may never have inserted
-                // the control separator): drop tracking, delete natively.
-                self.reset();
-            } else {
-                self.session.remove_separator();
-            }
+            // Inside the tracked separators - which one Forward Delete removed
+            // is uncertain, so tracking drops instead of guessing (a control
+            // gap was already uncertain on its own).
+            self.reset();
         }
         Dispatch::Pass(plan)
     }
@@ -557,13 +554,18 @@ impl Dispatcher {
                 // inserted (a chat app's Enter sent and cleared the field):
                 // its geometry is unconfirmed, so the key goes native.
                 self.reset();
-            } else {
-                if !self.caret_drift && self.caret_back == -(self.session.trailing_gap() as isize) {
-                    self.session.remove_last_separator();
-                } else {
-                    self.session.remove_separator();
-                }
+            } else if !self.caret_drift
+                && self.caret_back == -(self.session.trailing_gap() as isize)
+                && self.session.remove_last_separator()
+            {
+                // The caret sat exactly at the end of the tracked gap: the
+                // deleted separator is known, undo it exactly.
                 self.caret_back += 1;
+            } else {
+                // Inside the gap, a drifted caret, or nothing left to undo:
+                // which separator died is uncertain, so tracking drops
+                // instead of guessing.
+                self.reset();
             }
             return Dispatch::pass();
         }
@@ -597,16 +599,15 @@ impl Dispatcher {
             self.reset();
             return Dispatch::pass();
         }
-        // Backspace deletes the char left of the caret. At the end of the gap
-        // that is the last separator, which the engine undoes exactly; inside
-        // the gap it is one of the middle ones, so the gap goes conservative.
-        let removed =
-            if !self.caret_drift && self.caret_back == -(self.session.trailing_gap() as isize) {
-                self.session.remove_last_separator()
-            } else {
-                self.session.remove_separator()
-            };
-        if removed {
+        // Backspace deletes the char left of the caret. Only when the caret
+        // is certainly at the end of the gap (no arrow drift since the word
+        // was committed) is the deleted separator known, so only then does
+        // the engine undo it exactly; anywhere inside the gap which
+        // separator died is uncertain and the tracked state is dropped.
+        if !self.caret_drift
+            && self.caret_back == -(self.session.trailing_gap() as isize)
+            && self.session.remove_last_separator()
+        {
             self.caret_back += 1;
         } else {
             self.reset();

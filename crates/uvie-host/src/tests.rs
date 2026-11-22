@@ -519,16 +519,19 @@ fn backspace_while_composing_updates_anchor_offset() {
 }
 
 #[test]
-fn forward_delete_deleting_space_arms_edit() {
+fn forward_delete_inside_gap_drops_tracking() {
     let mut d = dispatcher();
     type_text(&mut d, "don");
     expect_pass(d.handle(KeyEvent::char(' '), &Context::default()));
-    // Step back onto the word end, then Forward Delete removes the space.
+    // Step back onto the word end, then Forward Delete removes the space:
+    // which separator died inside the gap is uncertain, so the history is
+    // dropped rather than guessed.
     expect_pass(d.handle(KeyEvent::left(), &Context::default()));
     expect_pass(d.handle(KeyEvent::forward_delete(), &Context::default()));
     assert_eq!(d.caret_back(), 0);
+    assert!(!d.session.has_committed());
     let plan = expect_consume(d.handle(KeyEvent::char('s'), &Context::default()));
-    assert_eq!(plan, vec![InputAction::Backspace(2), text("ón")]);
+    assert_eq!(plan, vec![text("s")], "a fresh keystroke, not an edit");
 }
 
 #[test]
@@ -1335,15 +1338,85 @@ fn separator_delete_undoes_code_token_dot() {
 }
 
 #[test]
-fn separator_delete_inside_gap_stays_conservative() {
+fn separator_delete_inside_gap_drops_tracking() {
     // "this, " with the caret moved inside the gap: Backspace deletes the
-    // comma (not the last separator), so the conservative path runs and the
-    // surviving separator is unknown - the space stays, no retro restore.
+    // comma (not the last separator), which separator died is uncertain, so
+    // the tracked state is dropped - the space stays, no retro restore and
+    // no comma is ever re-typed.
     let mut d = dispatcher();
-    assert_eq!(
-        replay_script(&mut d, "this, {<}is a test "),
-        "thí is a test |"
+    let mut screen: Vec<char> = Vec::new();
+    let mut caret = 0usize;
+    let mut comma_in_plan = false;
+    for ch in "this, ".chars() {
+        drive_with_native(
+            &mut d,
+            KeyEvent::char(ch),
+            &mut screen,
+            &mut caret,
+            &mut comma_in_plan,
+            |s, c| {
+                s.insert(*c, ch);
+                *c += 1;
+            },
+        );
+    }
+    // Left puts the real caret between ',' and ' ', Backspace deletes ','.
+    drive_with_native(
+        &mut d,
+        KeyEvent::left(),
+        &mut screen,
+        &mut caret,
+        &mut comma_in_plan,
+        |_, c| *c = c.saturating_sub(1),
     );
+    drive_with_native(
+        &mut d,
+        KeyEvent::backspace(),
+        &mut screen,
+        &mut caret,
+        &mut comma_in_plan,
+        |s, c| {
+            if *c > 0 {
+                *c -= 1;
+                s.remove(*c);
+            }
+        },
+    );
+    assert!(
+        !d.session.has_committed(),
+        "the uncertain delete must drop the ring"
+    );
+    drive_with_native(
+        &mut d,
+        KeyEvent::right(),
+        &mut screen,
+        &mut caret,
+        &mut comma_in_plan,
+        |s, c| {
+            if *c < s.len() {
+                *c += 1;
+            }
+        },
+    );
+    for ch in "is a test ".chars() {
+        drive_with_native(
+            &mut d,
+            KeyEvent::char(ch),
+            &mut screen,
+            &mut caret,
+            &mut comma_in_plan,
+            |s, c| {
+                s.insert(*c, ch);
+                *c += 1;
+            },
+        );
+    }
+    let text: String = screen.iter().collect();
+    // The comma stays deleted and the space survives; the tail is the
+    // english restore of the freshly typed words only.
+    assert_eq!(text, "thí íis a test");
+    assert!(!text.contains(','));
+    assert!(!comma_in_plan, "no plan may re-inject the deleted comma");
 }
 
 #[test]
@@ -1486,7 +1559,8 @@ fn arrow_drift_disables_exact_separator_undo() {
             *c = c.saturating_sub(1);
         },
     );
-    // Backspace deletes the comma natively.
+    // Backspace deletes the comma natively: which separator died is
+    // uncertain under the drifted caret, so tracking drops.
     drive_with_native(
         &mut d,
         KeyEvent::backspace(),
@@ -1499,6 +1573,10 @@ fn arrow_drift_disables_exact_separator_undo() {
                 s.remove(*c);
             }
         },
+    );
+    assert!(
+        !d.session.has_committed(),
+        "the uncertain delete must drop the ring"
     );
     // Right back to the field end, then the next word.
     drive_with_native(
@@ -1534,4 +1612,49 @@ fn arrow_drift_disables_exact_separator_undo() {
     assert_eq!(text, "thí íis a test");
     assert!(!text.contains(','));
     assert!(!comma_in_plan, "no plan may re-inject the deleted comma");
+}
+
+/// A drifted caret makes the deleted separator's identity uncertain
+/// ("chaof." + Left + Right + Backspace deletes the '.'): the tracking is
+/// dropped instead of guessed, so the stale code-token dot cannot keep the
+/// next word raw.
+#[test]
+fn uncertain_separator_delete_clears_code_token_dot() {
+    let mut d = dispatcher();
+    replay_script(&mut d, "chaof.{}<");
+    assert!(
+        !d.session.has_committed(),
+        "the uncertain delete must drop the ring"
+    );
+    let mut screen: Vec<char> = "chào".chars().collect();
+    let mut caret = screen.len();
+    let mut comma_in_plan = false;
+    for ch in ", dduwowcj ".chars() {
+        drive_with_native(
+            &mut d,
+            KeyEvent::char(ch),
+            &mut screen,
+            &mut caret,
+            &mut comma_in_plan,
+            |s, c| {
+                s.insert(*c, ch);
+                *c += 1;
+            },
+        );
+    }
+    let text: String = screen.iter().collect();
+    assert_eq!(text, "chào, được ");
+}
+
+/// A gap deeper than the undo stack: exact undo covers the newest
+/// separators, conservative removal the middle ones, and `sep_base` returns
+/// the exact post-word state once the gap is empty - the '.' code-token
+/// state is gone.
+#[test]
+fn deep_gap_delete_restores_post_word_state() {
+    let mut d = dispatcher();
+    assert_eq!(
+        replay_script(&mut d, "chaof.      <<<<<<<, dduwowcj "),
+        "chào, được |"
+    );
 }

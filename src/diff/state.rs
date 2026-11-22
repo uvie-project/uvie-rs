@@ -326,6 +326,10 @@ pub struct DiffState {
     /// conservative `remove_separator`.
     sep_undo: [Option<SepUndo>; 4],
     sep_undo_len: u8,
+    /// The state before the FIRST separator of the newest word's trailing
+    /// gap: the exact post-word state to restore once the whole gap is gone,
+    /// even when the 4-entry undo stack ran out or deletes went conservative.
+    sep_base: Option<SepUndo>,
 }
 
 impl Default for DiffState {
@@ -377,6 +381,7 @@ impl DiffState {
             word_in_url: false,
             sep_undo: [const { None }; 4],
             sep_undo_len: 0,
+            sep_base: None,
         }
     }
 
@@ -595,7 +600,7 @@ impl DiffState {
         // Snapshot everything this call mutates so a Backspace at the end of
         // the gap can undo it exactly (remove_last_separator).
         if let Some(w) = self.committed(0) {
-            self.push_sep_undo(SepUndo {
+            let undo = SepUndo {
                 last_sep: self.last_sep,
                 last_sep_glued: self.last_sep_glued,
                 word_since_sep: self.word_since_sep,
@@ -613,7 +618,13 @@ impl DiffState {
                 sep_uniform: w.sep_uniform,
                 ends_sentence: w.ends_sentence,
                 gap_has_control: w.gap_has_control,
-            });
+            };
+            // The first separator of the gap also anchors the exact
+            // post-word state the gap returns to when fully deleted.
+            if w.gap == 0 {
+                self.sep_base = Some(undo);
+            }
+            self.push_sep_undo(undo);
         }
         // A separator right after a committed word is glued to it (`_` in
         // `foo_bar`); one that follows another separator is glued only when
@@ -722,93 +733,34 @@ impl DiffState {
     pub(crate) fn clear_sep_undo(&mut self) {
         self.sep_undo.fill(None);
         self.sep_undo_len = 0;
+        self.sep_base = None;
     }
 
     /// Take the undo stack out for a `clear()` that preserves the ring
     /// (`reopen_as_vietnamese`): the snapshots belong to the ring's trailing
     /// gap, so they must be put back with it.
-    pub(crate) fn take_sep_undo(&mut self) -> ([Option<SepUndo>; 4], u8) {
-        let undo = (self.sep_undo, self.sep_undo_len);
+    pub(crate) fn take_sep_undo(&mut self) -> ([Option<SepUndo>; 4], u8, Option<SepUndo>) {
+        let undo = (self.sep_undo, self.sep_undo_len, self.sep_base);
         self.clear_sep_undo();
         undo
     }
 
     /// Put back a stack saved by `take_sep_undo`.
-    pub(crate) fn restore_sep_undo(&mut self, undo: ([Option<SepUndo>; 4], u8)) {
+    pub(crate) fn restore_sep_undo(&mut self, undo: ([Option<SepUndo>; 4], u8, Option<SepUndo>)) {
         self.sep_undo = undo.0;
         self.sep_undo_len = undo.1;
+        self.sep_base = undo.2;
     }
 
-    /// The newest word's trailing gap contains a control separator: the host
-    /// may never have inserted that char, so geometry inside the gap is
-    /// unconfirmed.
-    #[inline]
-    pub(crate) fn trailing_gap_has_control(&self) -> bool {
-        self.committed(0).is_some_and(|w| w.gap_has_control)
-    }
-
-    /// A separator char right after the newest committed word was deleted.
-    /// Returns false when there is no separator left to account for.
-    #[inline]
-    pub(crate) fn remove_separator(&mut self) -> bool {
-        self.clear_sep_undo();
-        let gap_zero = match self.committed_mut(0) {
-            Some(w) if w.gap > 0 => {
-                w.gap -= 1;
-                // A mixed gap can no longer name its remaining char (" ,"
-                // losing the space leaves ","): mark the separator unknown.
-                if !w.sep_uniform {
-                    w.sep = '\0';
-                }
-                if w.gap == 0 {
-                    w.gap_has_control = false;
-                }
-                w.gap == 0
-            }
-            _ => return false,
-        };
-        if gap_zero {
-            // The char before the caret is the word again: the next separator
-            // is glued to it and the tracked separator history resets.
-            self.word_since_sep = true;
-            self.last_sep = '\0';
-            self.last_sep_glued = false;
-            // A deleted '.' never became a confirmed sentence boundary: with
-            // the separator history cleared the pending break would wrongly
-            // end the sentence at the next word.
-            self.sentence_break_pending = false;
-        }
-        true
-    }
-
-    /// The separator at the END of the newest word's trailing gap was deleted
-    /// (Backspace with the caret at the end of the gap): undo exactly what its
-    /// `note_separator` did, so the remaining separators are still known
-    /// exactly. Falls back to the conservative `remove_separator` when the
-    /// snapshot for this separator is gone (a gap longer than the stack).
-    /// Returns false when there is no separator left to account for.
-    #[inline]
-    pub(crate) fn remove_last_separator(&mut self) -> bool {
-        if self.committed(0).is_none_or(|w| w.gap == 0) {
-            return false;
-        }
-        let undo = if self.sep_undo_len > 0 {
-            self.sep_undo_len -= 1;
-            self.sep_undo[self.sep_undo_len as usize].take()
-        } else {
-            None
-        };
-        let Some(undo) = undo else {
-            return self.remove_separator();
-        };
+    /// Restore the state a `note_separator` snapshot recorded: the newest
+    /// word's separator fields plus every DiffState field it mutates, with
+    /// `sentence_vi`/`context_hint` restored only when that separator itself
+    /// ended the sentence (a host hint set meanwhile is not clobbered).
+    fn apply_sep_undo(&mut self, undo: SepUndo) {
         let ended_sentence = {
             let Some(w) = self.committed_mut(0) else {
-                return false;
+                return;
             };
-            w.gap -= 1;
-            // The deleted separator ended the sentence only when it set
-            // `ends_sentence` itself: restore the sentence context it reset,
-            // but never clobber a hint the host supplied meanwhile.
             let ended = !undo.ends_sentence && w.ends_sentence;
             w.sep = undo.sep;
             w.sep_uniform = undo.sep_uniform;
@@ -830,6 +782,100 @@ impl DiffState {
         if ended_sentence {
             self.sentence_vi = undo.sentence_vi;
             self.context_hint = undo.context_hint;
+        }
+    }
+
+    /// The newest word's trailing gap contains a control separator: the host
+    /// may never have inserted that char, so geometry inside the gap is
+    /// unconfirmed.
+    #[inline]
+    pub(crate) fn trailing_gap_has_control(&self) -> bool {
+        self.committed(0).is_some_and(|w| w.gap_has_control)
+    }
+
+    /// A separator char right after the newest committed word was deleted.
+    /// Returns false when there is no separator left to account for.
+    #[inline]
+    pub(crate) fn remove_separator(&mut self) -> bool {
+        // The snapshot positions inside the gap are unknowable after an
+        // uncertain delete, so the stack goes - but `sep_base` (the state
+        // before the FIRST separator) still describes the gap's origin and
+        // survives until the gap is empty or tracking is dropped entirely.
+        self.sep_undo.fill(None);
+        self.sep_undo_len = 0;
+        let gap_zero = match self.committed_mut(0) {
+            Some(w) if w.gap > 0 => {
+                w.gap -= 1;
+                // A mixed gap can no longer name its remaining char (" ,"
+                // losing the space leaves ","): mark the separator unknown.
+                if !w.sep_uniform {
+                    w.sep = '\0';
+                }
+                if w.gap == 0 {
+                    w.gap_has_control = false;
+                }
+                w.gap == 0
+            }
+            _ => return false,
+        };
+        if gap_zero {
+            if let Some(base) = self.sep_base {
+                // The gap is empty: return exactly to the post-word state
+                // the first separator replaced (token/code state included).
+                self.apply_sep_undo(base);
+                self.clear_sep_undo();
+            } else {
+                // The char before the caret is the word again: the next
+                // separator is glued to it and the tracked separator history
+                // resets.
+                self.word_since_sep = true;
+                self.last_sep = '\0';
+                self.last_sep_glued = false;
+                // A deleted '.' never became a confirmed sentence boundary:
+                // with the separator history cleared the pending break would
+                // wrongly end the sentence at the next word.
+                self.sentence_break_pending = false;
+            }
+        }
+        true
+    }
+
+    /// The separator at the END of the newest word's trailing gap was deleted
+    /// (Backspace with the caret at the end of the gap): undo exactly what its
+    /// `note_separator` did, so the remaining separators are still known
+    /// exactly. Falls back to the conservative `remove_separator` when the
+    /// snapshot for this separator is gone (a gap longer than the stack).
+    /// Returns false when there is no separator left to account for.
+    #[inline]
+    pub(crate) fn remove_last_separator(&mut self) -> bool {
+        if self.committed(0).is_none_or(|w| w.gap == 0) {
+            return false;
+        }
+        let gap = self.committed(0).map_or(0, |w| w.gap);
+        let undo = if self.sep_undo_len > 0 {
+            self.sep_undo_len -= 1;
+            self.sep_undo[self.sep_undo_len as usize].take()
+        } else {
+            None
+        };
+        // Removing the last gap char returns to the exact post-word state,
+        // even when the popped snapshot is gone (a gap longer than the
+        // stack): the first separator anchored that state.
+        let undo = if gap == 1 {
+            self.sep_base.or(undo)
+        } else {
+            undo
+        };
+        let Some(undo) = undo else {
+            return self.remove_separator();
+        };
+        let Some(w) = self.committed_mut(0) else {
+            return false;
+        };
+        w.gap -= 1;
+        self.apply_sep_undo(undo);
+        if gap == 1 {
+            self.clear_sep_undo();
         }
         true
     }
